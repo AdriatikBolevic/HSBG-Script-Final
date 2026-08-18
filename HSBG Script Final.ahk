@@ -557,6 +557,17 @@ global CFG := {
                                        ; with bnetRevealDwellMs as a floor so the launcher can never flash away.
                                        ;
                                        ; Nothing downstream is keyed to this value, so it can be set freely.
+    bnetRevealForeground:    true,     ; true = when the launcher comes up to launch
+                                       ; Hearthstone it is pinned above every other
+                                       ; window and given focus, the same treatment F3
+                                       ; gives Firestone Main / Battlegrounds
+                                       ; (fsRevealForeground). Without it the launcher
+                                       ; opens wherever the z-order happens to put it,
+                                       ; which on a busy desktop is behind whatever was
+                                       ; already there. The pin is dropped again the
+                                       ; moment the launcher minimizes or Hearthstone is
+                                       ; revealed, so it never floats over the game.
+                                       ; false = place it, but leave the z-order alone.
     loginDetectMinRetries:   25,       ; ticks before first BNet login‑screen check (~5s)
     loginFallbackMinRetries: 25,       ; ticks before entering LOGIN_WAIT fallback
     hammerFastMs:            200,      ; LaunchStateMachine tick interval (fast phase)
@@ -1426,6 +1437,15 @@ TryLaunchWTCG() {
         ; draws its focus ring -- which then stays drawn on the "Launching"
         ; state. The command is IPC rather than a synthetic click, so it does
         ; not care whether the client is foreground.
+        ;
+        ; This does NOT undo the foreground pin from stage 2, and the two are
+        ; not in conflict: TOPMOST is z-order, focus is input routing. The
+        ; launcher stays visually in front of everything -- a topmost window
+        ; outranks non-topmost windows whether or not it is active -- it simply
+        ; stops being the KEYBOARD-focused window, which is the only thing the
+        ; focus ring depends on. Do not "simplify" this by dropping the pin
+        ; instead; that trades a cosmetic ring for a launcher that disappears
+        ; behind whatever else is open.
         try {
             fg := DllCall("user32\GetForegroundWindow", "Ptr")
             if (fg && _bnetLauncherHwnd && fg = _bnetLauncherHwnd) {
@@ -2013,6 +2033,13 @@ RevealHSAfterLaunch() {
     StopHSCloaker()
     try UnmuteHearthstone()
 
+    ; Release the launcher's foreground pin. The minimize normally does this
+    ; first, but "normally" is not a guarantee -- a slow client, a retry, or a
+    ; minimize that does not take would leave a TOPMOST launcher floating over
+    ; the game. The game is about to become the thing on screen; nothing else
+    ; may be pinned above it.
+    try _BNetDropTopmost()
+
     _hsRevealed := Map()   ; fresh release‑ledger for this launch
 
     prev := A_DetectHiddenWindows
@@ -2573,7 +2600,7 @@ OWCreateHookProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, d
                     DllCall("ShowWindow", "Ptr", hwnd, "Int", 8)   ; SW_SHOWNA
                 }
             } else if (_bnetCloakActive && CFG.bnetAggressiveHide
-                    && !IsHelperWindow(hwnd)) {
+                    && !_IsBlizzInfrastructureWindow(hwnd)) {
                 try _HideBlizzWindow(hwnd, exe)
             }
             return
@@ -2589,7 +2616,7 @@ OWCreateHookProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, d
             ; continues into the placement logic below, so its very first
             ; frame already lands on the chosen monitor.
             if (_bnetCloakActive && CFG.bnetAggressiveHide) {
-                if !IsHelperWindow(hwnd)
+                if !_IsBlizzInfrastructureWindow(hwnd)
                     try _HideBlizzWindow(hwnd, exe)
                 if _bnetHiddenByUs.Has(hwnd)
                     return          ; a hidden SERVICE surface: nothing to place.
@@ -2951,8 +2978,12 @@ _FireFirestoneLoadingPSClose() {
     try Run(cmd, , "Hide")
 }
 
+; First sighting of every Overwolf top-level window, used only by the
+; diagnostic below. See the FS-LOADING log line for what it answers.
+global _fsOWFirstSeen := Map()
+
 SuppressFirestoneLoadingTick() {
-    global State, _fsHiddenByUs
+    global State, _fsHiddenByUs, _fsOWFirstSeen
     prev     := A_DetectHiddenWindows
     prevMode := A_TitleMatchMode
     DetectHiddenWindows true
@@ -2962,9 +2993,33 @@ SuppressFirestoneLoadingTick() {
         for exe in ["Overwolf.exe", "OverwolfBrowser.exe"] {
             for h in WinGetList("ahk_exe " . exe) {
                 try {
+                    ; Stamp every Overwolf window the first time this sweep
+                    ; sees it, titled or not. Costs one Map lookup per window
+                    ; per tick and answers the one question the log could not:
+                    ; how long the loading window existed BEFORE it was
+                    ; identifiable.
+                    if !_fsOWFirstSeen.Has(h)
+                        _fsOWFirstSeen[h] := A_TickCount
+
                     isPopup := IsLikelyFirestoneLoadingPopupHwnd(h)
                     if !isPopup
                         continue
+
+                    ; ---- WHY THIS LINE EXISTS ----
+                    ; This sweep can only match "Firestone - Loading" by exact
+                    ; title, so it is blind to the window for as long as the
+                    ; window is untitled. If the splash is ever visible before
+                    ; suppression, there are exactly two possible causes and
+                    ; they need opposite fixes: either the funnel declined to
+                    ; act on it (FS-EXEMPT names that), or it was on screen
+                    ; with no title for long enough to be seen (this names
+                    ; that). A large untitled= value here is the second.
+                    ; Logged once per launch, on the first identification.
+                    if !State.fsLoadingSeen
+                        _FSLog("FS-LOADING identified hwnd=" . h
+                             . " untitled=" . (A_TickCount - _fsOWFirstSeen.Get(h, A_TickCount)) . "ms"
+                             . " visible=" . (DllCall("user32\IsWindowVisible", "Ptr", h) ? 1 : 0)
+                             . " cloaked=" . (IsWindowCloakedDWM(h) ? 1 : 0))
 
                     State.fsLoadingSeen := true
 
@@ -2994,8 +3049,13 @@ SuppressFirestoneLoadingTick() {
 ; Run the exact‑title popup suppression/close loop at 10ms intervals for up to
 ; 60s, while simultaneously keeping the popup suppression burst active.
 StartKillFirestoneLoading() {
-    global State, _fsPopupWatchDone
+    global State, _fsPopupWatchDone, _fsOWFirstSeen, _fsExemptLogged
     State.fsLoadingSeen := false
+    ; Fresh measurement per launch. Both maps are diagnostic ledgers scoped to
+    ; one Firestone start-up; carrying entries over from a previous F2 would
+    ; report an untitled= age measured from the wrong process.
+    _fsOWFirstSeen  := Map()
+    _fsExemptLogged := Map()
     _fsPopupWatchDone := false   ; popup lifecycle open — early cloak waits on it
     SuppressFirestoneLoadingTick()
     KillFirestoneLoading()
@@ -3906,7 +3966,7 @@ HSCloakTick() {
             for exe in ["Battle.net.exe", "Agent.exe", "Battle.net Helper.exe"] {
                 for hwnd in WinGetList("ahk_exe " . exe) {
                     try {
-                        if IsHelperWindow(hwnd)
+                        if _IsBlizzInfrastructureWindow(hwnd)
                             continue
                         ; ---- PROMOTE-AND-UNHIDE (birth-race recovery) -------
                         ; A window hidden by the blanket BEFORE it could be
@@ -4912,6 +4972,28 @@ _FSWarmSuppress(hwnd, title) {
     DllCall("ShowWindow", "Ptr", hwnd, "Int", 0)      ; SW_HIDE -- exactly once
 }
 
+; Diagnostic: record a window the funnel declined to touch because it is
+; helper-shaped and carries no title we recognise.
+;
+; ONCE PER HWND, and only for titled windows. The funnel runs at 10 ms and the
+; window event hook calls it with an empty title for every newborn Overwolf
+; window, so an ungated log line here would be both a flood and a hot-path
+; FileAppend from a "Fast" callback. What it buys: if a Firestone surface is
+; ever visible when it should not be, this line names the window that was
+; skipped and why -- instead of leaving a silent early return to be found by
+; reading the source.
+global _fsExemptLogged := Map()
+_FSLogExemptOnce(hwnd, title) {
+    global _fsExemptLogged
+    if (title = "" || _fsExemptLogged.Has(hwnd))
+        return
+    _fsExemptLogged[hwnd] := true
+    ex := 0
+    try ex := WinGetExStyle("ahk_id " . hwnd)
+    _FSLog("FS-EXEMPT declined (helper-shaped, unrecognised title) hwnd=" . hwnd
+         . " title=`"" . title . "`" exstyle=" . Format("0x{:X}", ex))
+}
+
 ; The single suppression primitive. Every concealment site in this script calls
 ; this and nothing else, so the owners that act on one window cannot disagree
 ; about it.
@@ -4925,31 +5007,53 @@ _FSSuppressSurface(hwnd, title, allowProbe := false) {
     if !State.fsMainLocked
         return
 
+    ; Identity ledger, FIRST. Once an HWND has carried the Loading or Main title
+    ; it is permanently off-limits to the notification-popup closer, whatever it is
+    ; titled later. A title-and-size heuristic cannot safely distinguish a settled
+    ; notification from a Firestone window that happens to match, and the
+    ; consequence of getting it wrong is a WM_CLOSE.
+    ;
+    ; This runs BEFORE the helper-window branch below, which returns early. A
+    ; Loading window that took that early return was never recorded here, so the
+    ; one window guaranteed to become Firestone - Main was also the one window
+    ; the closer considered fair game. Recording identity is free and must not
+    ; be conditional on whether we go on to act.
+    if (title = "Firestone - Loading" || title = "Firestone - Main")
+        _fsMainCandidate[hwnd] := true
+
     ; HELPER-WINDOW EXEMPTION, NARROWED.
-    ; IsHelperWindow returns true for anything carrying WS_EX_TOOLWINDOW, and
-    ; Overwolf's notification popup ("Your abilities are ready!") is a tool
-    ; window -- so this early return skipped it entirely and it sat on screen
-    ; until the sweeper's ten-second stability timer got around to closing it.
-    ; The exemption exists to protect infrastructure windows (Qt tray helper,
-    ; message-only windows) from being managed at all; a 440x570 popup with a
-    ; title bar is not that. A popup-shaped Firestone surface is suppressed
-    ; like anything else -- cloak only, never moved, since a tool window's
-    ; position is Overwolf's business.
+    ; IsHelperWindow returns true for anything OWNED by another window or
+    ; carrying WS_EX_TOOLWINDOW. Overwolf builds most of its chrome-less
+    ; surfaces that way -- the notification popup ("Your abilities are ready!")
+    ; AND the "Firestone - Loading" splash -- so this early return skipped the
+    ; loading window entirely. Nothing else hides it: the 10 ms sweep funnels
+    ; through here, so it declined too, and the window simply sat on screen in
+    ; full view until KillFirestoneLoading's 250 ms timer WM_CLOSEd it. That is
+    ; the "flickered for a second and wasn't completely hidden before it
+    ; disappeared" report -- it was never hidden at all, it was closed.
+    ;
+    ; The exemption exists to protect INFRASTRUCTURE (Qt tray helper,
+    ; message-only sinks) from being managed at all. A titled Firestone surface
+    ; is not that, whatever its window styles say. Any surface we can name is
+    ; suppressed -- CLOAK ONLY, never moved, since a tool window's position is
+    ; Overwolf's business and a park would fight its owner.
+    ;
+    ; Titles are matched EXACTLY (IsFirestoneMainTitle and friends), so the
+    ; in-game overlay ("Firestone - Overlays") does not match any of them and
+    ; keeps its complete immunity. That is deliberate and load-bearing: the
+    ; overlay is the one Firestone surface that must never be touched.
     if IsHelperWindow(hwnd) {
-        if !IsFirestoneNotificationPopup(hwnd, title)
+        if !(IsFirestoneNotificationPopup(hwnd, title)
+          || IsFirestoneMainTitle(title)
+          || IsFirestoneBattlegroundsTitle(title)
+          || title = "Firestone - Loading") {
+            _FSLogExemptOnce(hwnd, title)
             return
+        }
         CloakWindow(hwnd)
         _DisableDWMTransitions(hwnd)
         return
     }
-
-    ; Identity ledger. Once an HWND has carried the Loading or Main title it is
-    ; permanently off-limits to the notification-popup closer, whatever it is
-    ; titled later. A title-and-size heuristic cannot safely distinguish a settled
-    ; notification from a Firestone window that happens to match, and the
-    ; consequence of getting it wrong is a WM_CLOSE.
-    if (title = "Firestone - Loading" || title = "Firestone - Main")
-        _fsMainCandidate[hwnd] := true
 
     warm := _FSIsWarm(hwnd)
     if (!warm && allowProbe)
@@ -4986,6 +5090,23 @@ _IsProtectedBNetMain(hwnd) {
         t := WinGetTitle("ahk_id " . hwnd)
         if !(t = "Battle.net" || t = "Blizzard Battle.net")
             return false
+
+        ; ---- OWNED WINDOWS ARE NEVER THE CLIENT ----------------------------
+        ; The real Battle.net client is an unowned top-level window. Its alert
+        ; panels -- maintenance notices, service outages, update prompts --
+        ; are OWNED dialogs that inherit the owner's caption, so they too are
+        ; titled "Battle.net" and they are laid out landscape at a size the
+        ; SHAPE FALLBACK below happily accepts. That made an alert pass as the
+        ; client: protected from the services blanket, and worse, latched into
+        ; _bnetLauncherHwnd as the launcher's identity.
+        ;
+        ; This test runs before the style and shape tests because it is the
+        ; only one of the three that cannot be fooled -- ownership is fixed at
+        ; creation and never changes, whereas styles settle late (the reason
+        ; the shape fallback exists at all) and shape is just a guess.
+        if DllCall("user32\GetWindow", "Ptr", hwnd, "UInt", 4, "Ptr")   ; GW_OWNER
+            return false
+
         style := WinGetStyle("ahk_id " . hwnd)
         if (style & 0x00040000)          ; WS_THICKFRAME: resizable = the client
             return true
@@ -5440,6 +5561,57 @@ IsHelperWindow(hwnd) {
     return false
 }
 
+; ── Blizzard-family helper immunity, NARROWED ────────────────────────────────
+; IsHelperWindow is deliberately broad: it exempts anything OWNED by another
+; window and anything carrying WS_EX_TOOLWINDOW. For Overwolf that is right --
+; those really are infrastructure. For the Battle.net family it is exactly
+; wrong, because the surfaces the services blanket exists to suppress ARE owned
+; dialogs: the maintenance alert, service-outage notices, update prompts. Every
+; Blizzard sweep called IsHelperWindow and hit `continue` on them, so the one
+; class of window most worth hiding was the one class guaranteed to be skipped.
+; That is the same shape as the Firestone notification-popup exemption bug --
+; a broad immunity rule swallowing the thing it was supposed to catch.
+;
+; This is the narrowed version used by the Blizzard sweeps. It exempts only
+; windows with no visible surface to suppress in the first place:
+;   * IME / TSF windows            -- managing them breaks text input
+;   * known Qt infrastructure      -- tray sink, event dispatcher
+;   * message-only windows         -- parented to HWND_MESSAGE, never composited
+;   * degenerate rectangles        -- 1x1 and smaller sinks
+; Anything with real pixels on a real monitor is the blanket's business,
+; ownership and tool-window style notwithstanding.
+_IsBlizzInfrastructureWindow(hwnd) {
+    try {
+        if IsIMEWindow(hwnd)
+            return true
+
+        t := ""
+        try t := WinGetTitle("ahk_id " . hwnd)
+        if (t = "QTrayIconMessageWindow" || t = "QEventDispatcherWin32_Internal_Widget"
+         || t = "SystemTray_Main" || t = "MSCTFIME UI" || t = "Default IME")
+            return true
+
+        ; Message-only windows are parented to HWND_MESSAGE rather than to the
+        ; desktop. They are never composited, so there is nothing to conceal --
+        ; and SW_HIDE on one is a pointless poke at another process's plumbing.
+        par  := DllCall("user32\GetAncestor", "Ptr", hwnd, "UInt", 1, "Ptr")   ; GA_PARENT
+        desk := DllCall("user32\GetDesktopWindow", "Ptr")
+        if (par && desk && par != desk)
+            return true
+
+        rc := Buffer(16, 0)
+        if DllCall("user32\GetWindowRect", "Ptr", hwnd, "Ptr", rc) {
+            w := NumGet(rc,  8, "Int") - NumGet(rc, 0, "Int")
+            h := NumGet(rc, 12, "Int") - NumGet(rc, 4, "Int")
+            if (w <= 1 || h <= 1)
+                return true
+        }
+    } catch {
+        return true            ; unreadable window: leave it alone
+    }
+    return false
+}
+
 ; Janitor: if a "QTrayIconMessageWindow" is ever VISIBLE, hide it again and log.
 global _qtHelperLogged := Map()
 QtHelperJanitor() {
@@ -5574,6 +5746,76 @@ global _bnetPostMinDone := false   ; one-shot: the post-launch minimize already
                                    ; ran for this F2 (HAMMERING sets it the
                                    ; moment HS's process exists)
 
+; ── Launcher foreground pin ──────────────────────────────────────────────────
+; The launcher's whole job is to be looked at: it comes up, navigates to the
+; Hearthstone page, presses Play, and goes away. Opening it into whatever slot
+; the z-order happens to offer means that on a desktop with anything already
+; open it launches the game from behind a browser window. This gives it the
+; same treatment F3 gives Firestone Main and Battlegrounds -- HWND_TOPMOST plus
+; an activate -- so it is unambiguously in front for the few seconds it exists.
+;
+; TOPMOST rather than a plain raise, for the same reason F3 uses it: a plain
+; SetForegroundWindow is subject to Windows' foreground-lock rules and loses to
+; a fullscreen window, which is precisely the situation this runs in.
+;
+; ONE-SHOT per hwnd. RevealBNetForRender doubles as a janitor and is called
+; repeatedly; repeating the activate on every call is the "hundreds of z-order
+; changes and activations" pattern that killed Firestone Main under F3 spam.
+;
+; NEVER while Hearthstone exists. A borderless Unity window that loses the
+; foreground re-runs its display-mode setup and snaps to its remembered
+; monitor -- the "HS flickered to primary monitor" regression. Once the game is
+; up, the foreground is its property and this stays out of it.
+global _bnetFgPinned := Map()
+_BNetPinForeground(hwnd) {
+    global CFG, _bnetFgPinned
+    if (!CFG.bnetRevealForeground || _bnetFgPinned.Has(hwnd))
+        return
+    if GetHSPID()
+        return
+    _bnetFgPinned[hwnd] := true
+    try {
+        DllCall("user32\SetWindowPos", "Ptr", hwnd, "Ptr", -1      ; HWND_TOPMOST
+            , "Int", 0, "Int", 0, "Int", 0, "Int", 0
+            , "UInt", 0x0001 | 0x0002 | 0x0010)                    ; NOSIZE|NOMOVE|NOACTIVATE
+        WinActivate("ahk_id " . hwnd)
+        _FSLog("BNET-FG launcher pinned topmost and activated hwnd=" . hwnd)
+    }
+}
+
+; Release the pin. Called from the minimize path and from the Hearthstone
+; reveal, whichever happens first.
+;
+; A topmost window that minimizes keeps the flag, so a launcher the user later
+; restores by hand would sit over the game forever. And if the minimize is late
+; -- a slow client, a retry -- the pin would otherwise put the launcher over a
+; game that has already been revealed. Both are one SetWindowPos to prevent.
+_BNetDropTopmost(hwnd := 0) {
+    global _bnetFgPinned
+    if hwnd {
+        targets := [hwnd]
+    } else {
+        targets := []
+        for h in _bnetFgPinned
+            targets.Push(h)
+    }
+    for h in targets {
+        try {
+            if DllCall("user32\IsWindow", "Ptr", h)
+                DllCall("user32\SetWindowPos", "Ptr", h, "Ptr", -2  ; HWND_NOTOPMOST
+                    , "Int", 0, "Int", 0, "Int", 0, "Int", 0
+                    , "UInt", 0x0001 | 0x0002 | 0x0010)
+        }
+        ; The ledger records the pin we are CURRENTLY holding, not one we once
+        ; held. Releasing has to clear it, or an F2 restart that reuses the
+        ; running launcher finds a stale entry, treats the window as already
+        ; pinned, and brings it back behind everything -- the exact bug this
+        ; whole block exists to prevent. Entry removed even when the window is
+        ; already dead, so the map cannot grow across restarts.
+        try _bnetFgPinned.Delete(h)
+    }
+}
+
 RevealBNetForRender() {
     global _bnetRevealedAt, _bnetLauncherStaged, ChosenMonIdx, _bnetLauncherHwnd
     global _bnetHiddenByUs, _bnetHideDone
@@ -5651,6 +5893,11 @@ RevealBNetForRender() {
                 ; IDENTITY: from here on, this exact hwnd is the launcher and
                 ; nothing may hide it again (see _HideBlizzWindow).
                 _bnetLauncherHwnd := hwnd
+
+                ; And put it in front. Last, so the pin lands on a window that
+                ; is already un-hidden and already on the chosen monitor --
+                ; pinning first would raise a window that is about to move.
+                _BNetPinForeground(hwnd)
             }
         }
     }
@@ -5945,6 +6192,11 @@ _BNetDwellMinimize() {
                             }
                         }
                     }
+                    ; Release the foreground pin BEFORE minimizing. A topmost
+                    ; window keeps the flag across a minimize, so a launcher
+                    ; the user restores by hand later would come back floating
+                    ; over the game.
+                    _BNetDropTopmost(hwnd)
                     _MinimizeWindowAnimated(hwnd)   ; the launcher is not cloaked: let it animate
                 }
             }
@@ -7517,11 +7769,14 @@ Hotkey_F1() {
         ; IPv6 target, so some presses silently took the full ceiling while
         ; others were quick. Same key, different behaviour every time. One knob,
         ; one duration.
-        t0 := A_TickCount
+        holdStart := A_TickCount
         Sleep(CFG.forcefulHoldMs)
         if CFG.f1DebugLog {
+            ; Log the MEASURED elapsed time, not the configured value. Sleep can
+            ; overshoot under load, and a hold that ran long is the first thing
+            ; to check when a skip felt wrong.
             try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") . " F1 hold "
-                . (A_TickCount - t0) . "ms (fixed " . CFG.forcefulHoldMs . ")`n"
+                . (A_TickCount - holdStart) . "ms (fixed " . CFG.forcefulHoldMs . ")`n"
                 , A_Temp . "\hs_bg_f1.log")
         }
 
