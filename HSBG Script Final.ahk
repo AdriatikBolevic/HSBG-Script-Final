@@ -7517,7 +7517,8 @@ Hotkey_F1() {
         ; IPv6 target, so some presses silently took the full ceiling while
         ; others were quick. Same key, different behaviour every time. One knob,
         ; one duration.
-Sleep(CFG.forcefulHoldMs)
+        t0 := A_TickCount
+        Sleep(CFG.forcefulHoldMs)
         if CFG.f1DebugLog {
             try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") . " F1 hold "
                 . (A_TickCount - t0) . "ms (fixed " . CFG.forcefulHoldMs . ")`n"
