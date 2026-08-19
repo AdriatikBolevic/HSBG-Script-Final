@@ -29,13 +29,35 @@
 ;        untouched, so the client reconnects past the animation while the match
 ;        continues resolving server-side. No re-authentication, no lost seat.
 ;
-;   F2   Launch or restart the session. Battle.net starts, launches Hearthstone
-;        and minimises; Firestone follows once the game process exists.
-;        Everything is placed on the monitor this script was started from.
+;   F2   Launch or restart the session. Battle.net starts, presses Play and
+;        minimises BEFORE the game window arrives, so Hearthstone opens onto a
+;        clear screen and takes the foreground on its own -- it is never
+;        hidden, muted or resized by this script.
+;
+;        EVERYTHING STARTS AT ONCE. Firestone is launched on the F2 press
+;        itself, in parallel with Battle.net, rather than waiting for
+;        Hearthstone to appear first. It loads in the background while
+;        Battle.net does its work, so the overlay is ready sooner -- usually
+;        before the game has finished loading.
+;
+;        If Play does not produce a game -- a pending update, a sign-in --
+;        the launcher comes back with an explanation instead of leaving the
+;        user staring at nothing.
+;
+;        Windows are placed on the monitor this script was started from. That
+;        is a setting, and it lives in HSBG Config.ini, not in this file.
+;
+;        Firestone is OPTIONAL. With no Overwolf/Firestone install, every
+;        Firestone subsystem stays dormant and the rest works normally.
 ;
 ;   F3   Show or hide the Firestone desktop windows. Starts hidden. Firestone
 ;        windows are deliberately exempt from the monitor lock: they return to
 ;        wherever you last placed them, on whichever screen.
+;
+;        Two things F3 never touches: the in-game overlay, which is always
+;        visible; and the notification popup, which is cloaked before it can
+;        paint and closed within milliseconds of being created, so it never
+;        becomes something F3 can summon back.
 ;
 ;   F4   Full shutdown. Closes Overwolf, Battle.net and Hearthstone, restores
 ;        anything the script changed, and exits.
@@ -43,8 +65,16 @@
 ;
 ; CONFIGURATION
 ; ------------------------------------------------------------------------------
-; Every tunable value lives in the CFG object in SECTION 1, documented in place
-; with its trade-offs. Nothing outside CFG needs editing for normal use.
+; Two settings live OUTSIDE this file entirely, in HSBG Config.ini next to it:
+; the monitor lock and the hotkey audio. They are ordinary preferences rather
+; than engineering tunables, and asking someone to open an 8,000-line script to
+; change one is not a real option. The file is created on first run, documents
+; itself, and is reachable from the tray menu. See LoadUserConfig.
+;
+; SECTION 1 opens with a USER SETTINGS block -- the few choices most people
+; want, chief among them whether windows are locked to the monitor the script
+; was started on (on by default). Everything after it is internal tuning,
+; documented in place with its trade-offs. Nothing outside CFG needs editing.
 ;
 ;
 ; DESIGN NOTES
@@ -152,7 +182,7 @@
 ;   S1   CONFIGURATION      Every tunable, documented in place.
 ;   S2   RUNTIME STATE      Shared flags and caches.
 ;   S3   HUD                On-screen status text.
-;   S4   AUDIO              Per-application mute for Hearthstone during F1.
+;   S4   AUDIO              Per-application unmute, kept as a repair only.
 ;   S5   PROCESS MANAGER    Locate, launch and query the four applications.
 ;   S6   PATH RESOLUTION    Find Overwolf and Firestone on disk.
 ;   S7   SETTINGS PATCH     Pre-configure Firestone's own settings file.
@@ -178,6 +208,14 @@
 ; ==============================================================================
 
 #Requires AutoHotkey v2.0
+
+; Build stamp. Shown on screen at start-up and on the tray tooltip.
+;
+; AutoHotkey does not reload an edited script, so "I updated the file" and "the
+; running script is the updated file" are separate claims -- and telling them
+; apart by behaviour alone has cost real time on this script. This makes the
+; running build identifiable at a glance, without opening anything.
+global HSBG_BUILD := "v9.0"
 #SingleInstance Force
 
 ; ==============================================================================
@@ -189,6 +227,72 @@
 ; X faster/slower/bigger", the answer usually starts here.
 ;
 global CFG := {
+    ; ╔══════════════════════════════════════════════════════════════════════╗
+    ; ║  USER SETTINGS                                                       ║
+    ; ║                                                                      ║
+    ; ║  The handful of choices most people actually want to change. Edit a  ║
+    ; ║  value, save, exit the script from the tray and start it again --    ║
+    ; ║  AutoHotkey does not reload an edited file on its own.               ║
+    ; ║                                                                      ║
+    ; ║  Everything below this block is internal tuning. The defaults there  ║
+    ; ║  are the tested ones; nothing needs changing for normal use.         ║
+    ; ╚══════════════════════════════════════════════════════════════════════╝
+
+    ; WHERE WINDOWS OPEN.
+    ; true  = Battle.net, the Blizzard Update Agent, Hearthstone and the on-screen
+    ;         status text are all put on the monitor you STARTED THE SCRIPT ON,
+    ;         whatever monitor they would otherwise have chosen. Start the script
+    ;         on the screen you want to play on and everything follows.
+    ; false = every window opens wherever Windows and the applications decide,
+    ;         and the script never moves anything.
+    ;
+    ; Harmless either way on a single-monitor machine: there is only one place
+    ; for a window to be, so the lock has nothing to correct and does no work.
+    ; Firestone's own windows are deliberately NOT covered -- see
+    ; fsFollowMonitorLock, further down -- because they are what you read while
+    ; playing and usually belong on a different screen from the game.
+    lockWindowsToChosenMonitor: true,
+
+    ; ── THESE TWO ARE DRIVEN BY HSBG.ini ────────────────────────────────────
+    ; The values here are the FALLBACKS used when no settings file is present.
+    ; HSBG Config.ini sits next to this script, is created automatically on first run,
+    ; and overrides both at start-up. Edit the .ini, not this -- the whole point
+    ; of the file is that you never have to open an 8,000-line script to change
+    ; your mind about a monitor lock. See LoadUserConfig.
+    hotkeyAudio:             false,    ; a deep guitar note when a hotkey fires.
+                                       ; OFF by default.
+    hotkeyAudioVolume:       25,       ; 0-100.
+    hotkeyFreqMode:         "singular", ; "singular" or "varied" for built-in tones.
+    hotkeyFreqSingular:     110.0,    ; frequency when mode is "singular".
+    hotkeyFreqF1:           82.41,    ; individual frequencies when mode is "varied".
+    hotkeyFreqF2:           110.0,
+    hotkeyFreqF3:           73.42,
+    hotkeyFreqF4:           55.0,
+    hotkeySoundFile:        "",       ; optional custom .wav file path for all hotkeys.
+
+    ; HOW THE BATTLE.NET LAUNCHER BEHAVES.
+    ;
+    ; "visible"   = the launcher opens on screen, is brought to the front, sits
+    ;               there briefly, presses Play and then minimises. You see what
+    ;               is happening, and if Battle.net wants something -- a patch,
+    ;               a sign-in -- it is already in front of you.
+    ;
+    ; "minimized" = the launcher never appears at all. It is minimised the
+    ;               instant its window exists, Play fires with no dwell, and
+    ;               Hearthstone is the first thing you see. Fastest path from
+    ;               F2 to the game, at the cost of never seeing the launcher --
+    ;               so if it needs attention you find out when the stall watch
+    ;               brings it back rather than immediately.
+    ;
+    ; Both modes end with the launcher minimised before the game window
+    ; appears, and both use the same stall watch when Play produces no game.
+    bnetLauncherMode:        "visible",
+
+    ; Hearthstone's window is never hidden, muted or resized by this script.
+    ; Fullscreen, borderless or windowed is entirely your in-game setting; the
+    ; only thing the lock above changes is WHICH MONITOR it opens on, and even
+    ; that is corrected only when it lands on the wrong one.
+
     ruleName:                "HS_BG",
     cooldownTime:            2000,   ; ms between F1 presses (anti‑stacking)
 
@@ -394,7 +498,11 @@ global CFG := {
     ; The popup is already concealed by the suppressors and Overwolf disposes of
     ; it once loading finishes, so closing it is tidiness with a real downside.
     ; Set true to restore the close behaviour.
-    fsCloseLoadingPopup:     false,
+    fsCloseLoadingPopup:     true,     ; CLOSE the loading popup as soon as a
+                                       ; separate Firestone‑Main exists.
+                                       ; The structural guard (Main must exist
+                                       ; separately) is unchanged, so the
+                                       ; popup is never confused with Main.
 
     fsMainUseHide:           true,     ; true = SW_HIDE FS-Main while locked
                                        ; (strongest exit -- a hidden window
@@ -486,40 +594,53 @@ global CFG := {
     fsBirthReassertMax:      3,
 
     ; ── Firestone launch point ──────────────────────────────────────────────
-    ; true = do NOT launch Firestone at the top of F2. Launch it only once
-    ; Hearthstone's PROCESS exists. Firestone-Main is then born into a quiet
-    ; system -- the loading suppressor, the early-cloak blanket and the 1 ms
-    ; burst have all done their work and moved on -- instead of into the
-    ; noisiest 20 seconds the script has. This is the structural half of the
-    ; fix; the cold policy above is the mechanical half. Either alone helps;
-    ; together the race does not exist.
-    ;
-    ; Overwolf detects an ALREADY-RUNNING game (it polls, it does not only
-    ; watch for launches), and EnsureFirestoneSettings already turns
-    ; launchFirestoneWhenGameStarts on, so the overlay still attaches. HS takes
-    ; 30-60s from process start to a playable menu, so Firestone is up long
-    ; before a Battlegrounds match can begin.
-    ;
-    ; Set false to restore the old order (Firestone first, then Battle.net).
-    fsLaunchAfterHS:         true,
-    fsLaunchAfterHSDelayMs:  800,      ; how long after Hearthstone's PROCESS
-                                       ; appears before Firestone is launched.
-                                       ; Anchored to the PROCESS deliberately,
-                                       ; not to HS's window or its reveal --
-                                       ; the process exists within a second of
-                                       ; Battle.net firing Play, which is many
-                                       ; seconds before HS has a window and
-                                       ; ten more before it is un-hidden and
-                                       ; fullscreen. Firestone therefore starts
-                                       ; early, while Hearthstone is still
-                                       ; loading, which is the whole point.
-                                       ; Was 1500; lowered because the arming
-                                       ; settle below now provides the actual
-                                       ; separation this was standing in for.
-    fsLaunchArmSettleMs:     250,      ; pause between arming the suppressors
-                                       ; and firing the Firestone launch, so
-                                       ; every one of them has ticked at least
-                                       ; once before the first window exists
+    ; false = LAUNCH FIRESTONE IMMEDIATELY on F2, alongside everything else.
+    ; The old deferred behaviour (waiting for Hearthstone.exe) is removed.
+    fsLaunchAfterHS:         false,    ; always immediate
+    fsPopupGraceMs:          3000,     ; how long a bare-"Firestone" window may
+                                       ; hold that title before it is judged a
+                                       ; notification rather than a Firestone
+                                       ; Main still forming. Main retitles to
+                                       ; "Firestone - Main" within about a
+                                       ; second; a notification never does. Only
+                                       ; consulted when Main is not open to
+                                       ; compare against -- with Main present the
+                                       ; popup is closed at once. The window is
+                                       ; cloaked throughout, so this is time
+                                       ; spent invisible, not time on screen.
+    fsLaunchDelayMs:         0,        ; how long after the F2 press before
+                                       ; Firestone is launched. 0 = immediately,
+                                       ; alongside everything else.
+                                       ;
+                                       ; THIS WAS 5000, AND IT BROKE FIRESTONE.
+                                       ; The delay was meant to move Firestone's
+                                       ; windows out of the busiest moment of the
+                                       ; launch, so a birth-time concealment race
+                                       ; had less to compete with. It did that --
+                                       ; and it also moved Firestone's start INTO
+                                       ; the window where Hearthstone is
+                                       ; initialising, instead of safely before
+                                       ; it. Firestone reads the game's memory to
+                                       ; drive its overlay, and starting mid-load
+                                       ; means it attaches to a process that is
+                                       ; not ready: "CRITICAL ERROR: Could not
+                                       ; read the game's memory", and no overlay
+                                       ; for the whole session.
+                                       ;
+                                       ; Launching BEFORE Hearthstone exists lets
+                                       ; Firestone be in place and waiting as the
+                                       ; game comes up, which is the ordering that
+                                       ; has always worked. A one-frame flash of a
+                                       ; loading window is a cosmetic complaint;
+                                       ; an overlay that cannot read the game is
+                                       ; the entire product.
+                                       ;
+                                       ; The deferral mechanism is kept, and can
+                                       ; be re-enabled by setting a value here --
+                                       ; but anything non-zero risks this again.
+    fsLaunchArmSettleMs:     50,       ; reduced from 250ms to arm suppressors faster
+                                       ; the suppressors now have a very short
+                                       ; settle before Firestone starts.
     ; ── Firestone suppression cadence (burst vs coast) ──────────────────────
     ; The suppression sweep enumerates every Overwolf / OverwolfBrowser window
     ; and reads each title. At 1 ms that is ~1000 full enumerations per second
@@ -539,24 +660,48 @@ global CFG := {
 
     bnetMinimizeCeilingMs:   60000,
 
-    bnetRevealDwellMs:       3000,     ; how long the REAL launcher window
-                                       ; must have been VISIBLE before the
-                                       ; WTCG launch command fires -- and
-                                       ; therefore its total on-screen time,
-                                       ; because it is minimized (animation-
-                                       ; free) the instant Play fires so the
-                                       ; game-page navigation renders
-                                       ; off-screen. Sequence: launcher
-                                       ; appears (unfocused) -> renders this
-                                       ; long -> Play -> minimize -> HS.
-                                       ; Raise for a longer look.
-    bnetPostPlayLingerMs:    2000,     ; EXTRA on-screen time after the dwell,
-                                       ; The pause between Hearthstone actually launching and the launcher
-                                       ; minimising. Anchored to the event, not to a stopwatch, so total on-screen
-                                       ; time is however long Battle.net takes to spawn Hearthstone.exe plus this,
-                                       ; with bnetRevealDwellMs as a floor so the launcher can never flash away.
+    ; SEQUENCE: launcher appears -> dwells -> Play -> minimize -> game opens.
+    ; The launcher is gone BEFORE the game's window arrives, so the game takes
+    ; the foreground with nothing else on screen to argue with.
+    bnetReadyCeilingMs:      12000,    ; how long Play will wait for the launcher
+                                       ; to look loaded before firing anyway. The
+                                       ; readiness check is evidence, not a
+                                       ; promise -- a minimized-mode launcher or
+                                       ; an unusually small window can never
+                                       ; satisfy it, and a launch that never
+                                       ; happens is far worse than one that
+                                       ; happens a moment early.
+    bnetRevealDwellMs:       1200,      ; minimum on-screen time for the launcher
+                                       ; before the Play command may fire. This
+                                       ; is a floor, not a wait: it only stops
+                                       ; the window flashing past. Raise it if
+                                       ; you want a longer look at the launcher.
+    bnetPostPlayLingerMs:    1250,     ; gap between Play firing and the launcher
+                                       ; minimizing. Anchored to the COMMAND, not
+                                       ; to Hearthstone's process, which is what
+                                       ; lets the launcher leave first.
                                        ;
-                                       ; Nothing downstream is keyed to this value, so it can be set freely.
+                                       ; 250ms was the minimum that let the client
+                                       ; register the command; this is that plus a
+                                       ; deliberate extra second on screen, so the
+                                       ; launcher reads as finishing its job
+                                       ; rather than blinking out of existence.
+                                       ; Still well clear of the game window.
+
+    ; Stalled launch: Play fired but no game appeared. Almost always a pending
+    ; update or a sign-in. See BNetStallWatchTick.
+    bnetStallRevealMs:       25000,    ; no Hearthstone this long after Play =
+                                       ; bring the launcher back so the user can
+                                       ; see what it is asking for. Generous, so
+                                       ; a slow-but-healthy start-up is never
+                                       ; interrupted.
+    bnetRelaunchEveryMs:     30000,    ; while waiting, re-fire Play this often.
+                                       ; A finished download leaves a client that
+                                       ; would now work, and nothing else would
+                                       ; ever press the button again.
+    bnetStallWatchMaxMs:     1800000,  ; give up after 30 minutes. Long, because a
+                                       ; multi-gigabyte patch is a legitimate
+                                       ; reason to still be waiting.
     bnetRevealForeground:    true,     ; true = when the launcher comes up to launch
                                        ; Hearthstone it is pinned above every other
                                        ; window and given focus, the same treatment F3
@@ -572,9 +717,40 @@ global CFG := {
     loginFallbackMinRetries: 25,       ; ticks before entering LOGIN_WAIT fallback
     hammerFastMs:            200,      ; LaunchStateMachine tick interval (fast phase)
     hammerSlowMs:            500,      ; LaunchStateMachine tick interval (login‑wait phase)
-    owWaitPollMs:            200,      ; OW_WAIT state poll interval
-    owReadyStabilityMs:      2000,     ; ms OverwolfBrowser.exe must be stable before transition
     launchHudWatchMs:        400,      ; LaunchHudWatchdog poll interval
+
+    fsHealthCheckMs:         60000,    ; after launching Firestone, wait this long
+                                       ; and then check whether it is actually
+                                       ; running. If it is not -- a failed start,
+                                       ; a critical error -- every Firestone timer
+                                       ; is stood down instead of polling for
+                                       ; windows that will never appear. Generous,
+                                       ; so a slow Overwolf start is never
+                                       ; mistaken for a failure.
+
+    ; ── Hotkey reliability ──────────────────────────────────────────────────
+    ; The four F-keys are gated on "no system modifier is held" so Alt+F4 and
+    ; friends pass through to Windows. If the OS ever reports a modifier held
+    ; that is not, that gate turns every hotkey inert with no visible symptom.
+    ; See HK_NoSysMods for the full mechanism.
+    hkStuckModifierRepair:   true,     ; true = release a modifier the OS reports
+                                       ; as held while no input is happening.
+                                       ; This is what makes "the hotkeys stopped
+                                       ; working" self-correcting instead of
+                                       ; needing a script restart.
+    hkStuckModifierMs:       10000,    ; required idle time before a held modifier
+                                       ; is judged stuck. No human chord lasts
+                                       ; this long: Alt-tab sends Tab presses,
+                                       ; which reset the idle timer. Raise it if
+                                       ; you ever see a legitimate chord broken.
+    hkGateBlockedMs:         3000,     ; the OTHER way a modifier is judged stuck:
+                                       ; the hotkey gate has been refusing every
+                                       ; press continuously for this long. Needed
+                                       ; because a user pressing dead F-keys keeps
+                                       ; the idle timer above near zero, so the
+                                       ; idle test alone would never fire for the
+                                       ; person who needs it most.
+    hkWatchdogPollMs:        2000,     ; how often that check runs.
 
     ; ── Performance / smoothness tweaks (set false to disable) ──────────────
     scriptAboveNormalPriority: true,    ; true = run this script itself at AboveNormal
@@ -592,15 +768,9 @@ global CFG := {
                                        ; System‑wide: indexing pauses for ALL users
                                        ; on this machine while HS is alive.
 
-    ; ── Monitor lock (HUD / Battle.net / Agent / Hearthstone) ───────────────
-    lockWindowsToChosenMonitor: true,  ; true = lock the HUD, the Battle.net
-                                       ; client (its splash / services UI live in
-                                       ; the same process) and the Blizzard Update
-                                       ; Agent, and Hearthstone itself, to the
-                                       ; monitor the script was launched on
-                                       ; (ChosenMonIdx). Set false to let each
-                                       ; window stay on whatever monitor it opens
-                                       ; on (the previous behaviour).
+    ; ── Monitor lock (HUD / Battle.net / Agent; Hearthstone via its own guard) ─
+    ; (lockWindowsToChosenMonitor lives in the USER SETTINGS block at the top
+    ;  of CFG -- it is the one placement choice people actually change.)
     preShowPlaceBNet:        false,    ; DISABLED: redundant now that the
                                        ; reveal positions the launcher
                                        ; entirely while it is still hidden.
@@ -650,6 +820,289 @@ global CFG := {
                                        ; LOGIN_WAIT bookkeeping), and LateHSWatch recovers even a post-ceiling launch.
 }
 
+; ══════════════════════════════════════════════════════════════════════════════
+;  EXTERNAL SETTINGS FILE — HSBG.ini
+; ══════════════════════════════════════════════════════════════════════════════
+; Applied immediately after CFG is built and before anything reads it.
+;
+; WHY A SEPARATE FILE. CFG is the engineering surface: sixty-odd values, most of
+; which have a paragraph explaining what they trade away. Two of them are
+; ordinary preferences that a user should be able to change on a whim, and
+; asking someone to open an 8,000-line script and find the right line to do it
+; is not a real option. The .ini is those two, in a file you can read in ten
+; seconds.
+;
+; The file lives next to the script and is created on first run with its
+; defaults and comments, so there is nothing to install and nothing to copy from
+; the documentation. Delete it and it comes back.
+;
+; Everything here is defensive: a missing file, an unreadable one, a value
+; someone typed as "yes" instead of 1 -- none of it may stop the script
+; starting. Anything unparseable falls back to the CFG default and says so in
+; the log.
+LoadUserConfig()
+
+; Where HSBG.ini lives. Resolved once, then cached.
+;
+; THE SCRIPT'S OWN FOLDER IS NOT ALWAYS A PLACE THE USER CAN WRITE.
+; This script runs ELEVATED. A file it creates next to itself inherits that
+; folder's permissions, so if the script sits anywhere protected -- Program
+; Files, a synced folder, a drive with restrictive ACLs -- the .ini ends up
+; owned by an administrator and an ordinary Notepad cannot save over it. The
+; user opens the file, edits it, presses save, and is refused. Nothing about
+; that is visible from the outside; it just looks like the settings file is
+; broken.
+;
+; So the folder is CHOSEN by testing it, not assumed:
+;
+;   1. An HSBG.ini already sitting next to the script wins. That is portable
+;      mode -- a USB stick, a git checkout -- and whoever put it there meant it.
+;   2. Otherwise, if the script's own folder is genuinely writable, use it.
+;      That is the friendliest place: the settings sit with the thing they
+;      configure.
+;   3. Otherwise %APPDATA%\HSBG\HSBG.ini, which a user can always write to
+;      without elevation, by definition.
+;
+; Whichever wins is logged at start-up and shown in the tray menu, so there is
+; never a question about which file is actually being read.
+;
+; THE CACHE IS A `static`, NOT A FILE-SCOPE GLOBAL, AND THAT IS LOAD-BEARING.
+;
+; It was a global, declared `global _cfgPathResolved := ""` a couple of dozen
+; lines BELOW the LoadUserConfig() call that starts all of this. A file-scope
+; initializer runs when the auto-execute thread reaches THAT LINE -- so at the
+; moment this function first ran, the variable did not exist yet. Reading an
+; unset variable throws in AutoHotkey v2, the throw was caught by the blanket
+; try in LoadUserConfig, and the entire settings file was silently ignored.
+; Edit HSBG.ini, restart, nothing changes, no error, no log line.
+;
+; A static initializes on first call, so it cannot be outrun by the order of
+; statements in the file. Nothing here may depend on where in the script it
+; happens to sit.
+_ConfigPath() {
+    static cached := ""
+    if (cached != "")
+        return cached
+
+    beside := A_ScriptDir . "\HSBG Config.ini"
+    if (FileExist(beside) || _DirIsWritable(A_ScriptDir)) {
+        cached := beside
+        return cached
+    }
+
+    dir := A_AppData . "\HSBG"
+    try {
+        if !DirExist(dir)
+            DirCreate(dir)
+    }
+    cached := (DirExist(dir) ? dir : A_AppData) . "\HSBG Config.ini"
+    return cached
+}
+
+; Can a file actually be created here? Asked, not assumed -- the entire bug
+; this guards against is a folder that looks fine and refuses the write.
+_DirIsWritable(dir) {
+    probe := dir . "\hsbg_write_test.tmp"
+    try {
+        f := FileOpen(probe, "w")
+        if !f
+            return false
+        f.Close()
+        FileDelete(probe)
+        return true
+    }
+    return false
+}
+
+; Make sure the user can edit the file after we write it.
+;
+; Clears the read-only attribute, which a copy out of a downloads folder, a
+; restored backup or an extracted archive can all set. Cheap, and it removes
+; one more way for "I went to edit the config and it would not let me" to
+; happen.
+_MakeConfigEditable(path) {
+    try FileSetAttrib("-R", path)
+}
+
+; Write the default settings file. Called only when it does not exist.
+_WriteDefaultConfig(path) {
+    txt := ""
+    txt .= "; ============================================================================`r`n"
+    txt .= ";  HSBG -- settings`r`n"
+    txt .= "; ============================================================================`r`n"
+    txt .= ";  Edit a value, save, then exit HSBG from the tray icon and start it again.`r`n"
+    txt .= ";  AutoHotkey does not reload a running script, and this file is read once`r`n"
+    txt .= ";  at start-up.`r`n"
+    txt .= ";`r`n"
+    txt .= ";  Every setting is 1 for on, 0 for off. Delete this file to get it back`r`n"
+    txt .= ";  with the defaults.`r`n"
+    txt .= "; ----------------------------------------------------------------------------`r`n"
+    txt .= "`r`n"
+    txt .= "[Settings]`r`n"
+    txt .= "`r`n"
+    txt .= "; MonitorLock -- default 1 (on)`r`n"
+    txt .= ";`r`n"
+    txt .= ";   1 = Battle.net, the Blizzard Update Agent, Hearthstone and the on-screen`r`n"
+    txt .= ";       status text all open on the monitor you STARTED THIS SCRIPT ON.`r`n"
+    txt .= ";       Start it on the screen you want to play on and everything follows.`r`n"
+    txt .= ";   0 = every window opens wherever Windows and the applications decide,`r`n"
+    txt .= ";       and the script never moves anything.`r`n"
+    txt .= ";`r`n"
+    txt .= ";   Makes no difference on a single-monitor machine: there is only one place`r`n"
+    txt .= ";   for a window to be. Firestone's own windows are never covered by this --`r`n"
+    txt .= ";   they stay wherever you put them, which is usually a second screen.`r`n"
+    txt .= "MonitorLock=1`r`n"
+    txt .= "`r`n"
+    txt .= "; HotkeyAudio -- default 0 (off)`r`n"
+    txt .= ";`r`n"
+    txt .= ";   1 = play a short, deep guitar note when a hotkey fires, so you know a`r`n"
+    txt .= ";       press registered without looking away from the game. All keys now`r`n"
+    txt .= ";       sound the same unless you customise frequencies below.`r`n"
+    txt .= ";   0 = silent.`r`n"
+    txt .= ";`r`n"
+    txt .= ";   The notes are generated on first use and cached, so enabling this adds`r`n"
+    txt .= ";   about a second to one start-up and nothing afterwards.`r`n"
+    txt .= "HotkeyAudio=0`r`n"
+    txt .= "`r`n"
+    txt .= "; HotkeyAudioVolume -- 0 to 100, default 25`r`n"
+    txt .= ";   Ignored while HotkeyAudio=0.`r`n"
+    txt .= "HotkeyAudioVolume=25`r`n"
+    txt .= "`r`n"
+    txt .= "; HotkeySoundFile -- optional custom .wav file to play for all hotkeys.`r`n"
+    txt .= ";   If left empty, the built-in synthesised note is used (with frequencies`r`n"
+    txt .= ";   configured below). The path must point to an existing PCM WAV file.`r`n"
+    txt .= ";   If the file is missing, the script falls back to the default tone.`r`n"
+    txt .= "HotkeySoundFile=`r`n"
+    txt .= "`r`n"
+    txt .= "; HotkeyFreqMode -- how frequencies are chosen for the built-in tones.`r`n"
+    txt .= ";   `"singular`" = all hotkeys use the same frequency (set by HotkeyFreqSingular).`r`n"
+    txt .= ";   `"varied`"   = each key uses its own frequency (HotkeyFreqF1..F4).`r`n"
+    txt .= ";   Default: singular.`r`n"
+    txt .= "HotkeyFreqMode=singular`r`n"
+    txt .= "`r`n"
+    txt .= "; HotkeyFreqSingular -- frequency in Hz for all keys when mode is `"singular`".`r`n"
+    txt .= ";   Default: 110.0 (the F2 note). Must be a positive number.`r`n"
+    txt .= "HotkeyFreqSingular=110.0`r`n"
+    txt .= "`r`n"
+    txt .= "; HotkeyFreqF1..F4 -- individual frequencies when mode is `"varied`".`r`n"
+    txt .= ";   If left blank or set to 0, that key falls back to HotkeyFreqSingular.`r`n"
+    txt .= ";   Defaults: F1=82.41, F2=110.00, F3=73.42, F4=55.00 (the original notes).`r`n"
+    txt .= "HotkeyFreqF1=82.41`r`n"
+    txt .= "HotkeyFreqF2=110.00`r`n"
+    txt .= "HotkeyFreqF3=73.42`r`n"
+    txt .= "HotkeyFreqF4=55.00`r`n"
+    try FileAppend(txt, path, "UTF-8-RAW")
+    _MakeConfigEditable(path)
+}
+
+; Read one integer setting. Returns the fallback for anything unparseable.
+_CfgInt(path, key, fallback, lo, hi) {
+    raw := ""
+    try raw := IniRead(path, "Settings", key, "")
+    raw := Trim(raw)
+    if (raw = "")
+        return fallback
+    if !IsInteger(raw) {
+        _FSLog("CONFIG " . key . "=" . raw . " is not a number -- using "
+             . fallback)
+        return fallback
+    }
+    v := Integer(raw)
+    if (v < lo || v > hi) {
+        _FSLog("CONFIG " . key . "=" . v . " is out of range " . lo . "-" . hi
+             . " -- using " . fallback)
+        return fallback
+    }
+    return v
+}
+
+; Read a floating-point setting with bounds.
+_CfgFloat(path, key, fallback, lo, hi) {
+    raw := ""
+    try raw := IniRead(path, "Settings", key, "")
+    raw := Trim(raw)
+    if (raw = "")
+        return fallback
+    if !IsNumber(raw) {
+        _FSLog("CONFIG " . key . "=" . raw . " is not a number -- using " . fallback)
+        return fallback
+    }
+    v := Float(raw)
+    if (v < lo || v > hi) {
+        _FSLog("CONFIG " . key . "=" . v . " is out of range " . lo . "-" . hi
+             . " -- using " . fallback)
+        return fallback
+    }
+    return v
+}
+
+LoadUserConfig() {
+    global CFG
+    try {
+        path := _ConfigPath()
+        if !FileExist(path)
+            _WriteDefaultConfig(path)
+        if !FileExist(path)
+            return
+
+        CFG.lockWindowsToChosenMonitor := (_CfgInt(path, "MonitorLock", 1, 0, 1) = 1)
+        CFG.hotkeyAudio                := (_CfgInt(path, "HotkeyAudio",  0, 0, 1) = 1)
+        CFG.hotkeyAudioVolume          :=  _CfgInt(path, "HotkeyAudioVolume", 25, 0, 100)
+        ; custom sound file
+        try {
+            CFG.hotkeySoundFile := Trim(IniRead(path, "Settings", "HotkeySoundFile", ""))
+        } catch {
+            CFG.hotkeySoundFile := ""
+        }
+        ; frequency mode
+        try {
+            CFG.hotkeyFreqMode := Trim(IniRead(path, "Settings", "HotkeyFreqMode", "singular"))
+        } catch {
+            CFG.hotkeyFreqMode := "singular"
+        }
+        if (CFG.hotkeyFreqMode != "singular" && CFG.hotkeyFreqMode != "varied")
+            CFG.hotkeyFreqMode := "singular"
+        ; frequency values
+        try {
+            CFG.hotkeyFreqSingular := _CfgFloat(path, "HotkeyFreqSingular", 110.0, 20.0, 2000.0)
+        } catch {
+            CFG.hotkeyFreqSingular := 110.0
+        }
+        try {
+            CFG.hotkeyFreqF1 := _CfgFloat(path, "HotkeyFreqF1", 82.41, 20.0, 2000.0)
+        } catch {
+            CFG.hotkeyFreqF1 := 82.41
+        }
+        try {
+            CFG.hotkeyFreqF2 := _CfgFloat(path, "HotkeyFreqF2", 110.0, 20.0, 2000.0)
+        } catch {
+            CFG.hotkeyFreqF2 := 110.0
+        }
+        try {
+            CFG.hotkeyFreqF3 := _CfgFloat(path, "HotkeyFreqF3", 73.42, 20.0, 2000.0)
+        } catch {
+            CFG.hotkeyFreqF3 := 73.42
+        }
+        try {
+            CFG.hotkeyFreqF4 := _CfgFloat(path, "HotkeyFreqF4", 55.0, 20.0, 2000.0)
+        } catch {
+            CFG.hotkeyFreqF4 := 55.0
+        }
+
+        _FSLog("CONFIG read " . path
+             . " -- MonitorLock=" . (CFG.lockWindowsToChosenMonitor ? 1 : 0)
+             . " HotkeyAudio="    . (CFG.hotkeyAudio ? 1 : 0)
+             . " Volume="         .  CFG.hotkeyAudioVolume
+             . " SoundFile="      .  CFG.hotkeySoundFile
+             . " FreqMode="       .  CFG.hotkeyFreqMode)
+    } catch as e {
+        try _FSLog("CONFIG FAILED to load: " . e.Message
+                 . " -- the settings file was NOT applied and the built-in"
+                 . " defaults are in force. This line existing at all means"
+                 . " something is wrong with the file or its folder.")
+    }
+}
+
 ; ==============================================================================
 ; SECTION 2: RUNTIME STATE
 ; ==============================================================================
@@ -667,9 +1120,8 @@ global State := {
     launcherHideActive:      false,   ; true = HideOverwolfLauncher timer is running
     f2Active:                false,   ; true = F2 launch pipeline is in progress
     fsMainLocked:            true,    ; true = force Firestone‑Main suppressed at all times
-    hsHiddenLaunchActive:    false,   ; true = HS hide‑on‑launch watchdog is running
-    hsHiddenLaunchUntil:     0,       ; TickCount when the hide‑on‑launch period expires
-    hsMuteConfirmed:         false,   ; true = MuteHearthstone() succeeded this launch cycle
+    hsHiddenLaunchActive:    false,   ; true = the post-launch placement watch is running
+    hsHiddenLaunchUntil:     0,       ; TickCount ceiling for that watch
     fsLoadingSeen:           false,
     wsearchPaused:           false,   ; true = we stopped WSearch and owe it a restart
 }
@@ -693,13 +1145,12 @@ global Cache := {
 
 ; Launch pipeline state machine.
 global Launch := {
-    state:              "IDLE",   ; IDLE | OW_WAIT | HAMMERING | LOGIN_WAIT | DONE
+    state:              "IDLE",   ; IDLE | HAMMERING | LOGIN_WAIT | DONE
     retries:            0,
     lastAttempt:        0,
     sessionStart:       0,
     loginFallbackDone:  false,
     loginTitleCount:    0,
-    owFirstSeen:        0,
     skipLoginDetect:    false,    ; true on restart — BNet already authenticated
     bnetWasRunning:     false,
     loginEnteredAt:     0,        ; TickCount when LOGIN_WAIT was entered. Time the
@@ -771,6 +1222,17 @@ class BgHUD {
         textW := fs * 25
 
         g := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20", "BgHUD")
+        ; -DPIScale: EVERY number below is already a physical pixel value,
+        ; derived from the real monitor bounds via MonitorGet/SysGet, which
+        ; AutoHotkey does not scale. A Gui scales what it is given by the
+        ; monitor's DPI factor unless told not to, so leaving this off scaled
+        ; the font, margins, width and the x/y position a SECOND time. At 100%
+        ; scaling the factor is 1.0 and nothing was visibly wrong -- which is
+        ; why it survived; at 125/150/200%, the settings most laptops and most
+        ; single-monitor machines ship with, the HUD rendered oversized and
+        ; well off its intended position, and at higher factors partly off the
+        ; edge of the screen.
+        g.Opt("-DPIScale")
         g.BackColor := "111111"
         g.MarginX   := fs // 2
         g.MarginY   := fs // 2
@@ -958,11 +1420,303 @@ GetChosenMonitorBounds(&l, &t, &w, &h) {
 ; It does NOT mute system audio globally, and — critically — it NEVER touches
 ; any HS window, so it cannot trigger Windows IME/TSF helper‑window popups.
 ; ------------------------------------------------------------------------------
-MuteHearthstone() {
-    pid := GetHSPID()
-    if !pid
+; NOTE: there is no MuteHearthstone. The game is no longer concealed during the
+; launch, so there is no longer a window of time in which the user can hear a
+; game they cannot see. Only the UNMUTE survives, as a repair for a mute left
+; behind by an earlier build of this script.
+; ══════════════════════════════════════════════════════════════════════════════
+;  HOTKEY TONES — a deep guitar note per key
+; ══════════════════════════════════════════════════════════════════════════════
+; Off by default; switched on with HotkeyAudio=1 in HSBG.ini.
+;
+; WHY THESE ARE SYNTHESISED RATHER THAN BEEPED. SoundBeep drives the system beep
+; with a square wave: it is thin, piercing, and at the low frequencies wanted
+; here it sounds like a fault rather than a note. An earlier build used it and
+; the verdict was that the beeps "suck" -- which was fair, and was about the
+; waveform, not the idea.
+;
+; A plucked, overdriven bass string is a specific and reproducible shape, so it
+; is built rather than approximated:
+;
+;   * Harmonics 1-5, amplitude 1/n, each decaying FASTER than the one below it.
+;     That falling-brightness-over-time is what the ear reads as a plucked
+;     string rather than an organ.
+;   * Soft clipping (s - s^3/3, hard-limited past unity). This is the classic
+;     valve-overdrive curve: it adds odd harmonics and compresses the peak, so
+;     the note reads as "heavy" without turning into buzz.
+;   * A 5ms attack, so the note starts with a pick edge instead of a click, and
+;     a slow overall decay so it rings rather than blips.
+;
+; Frequencies are the bottom of a guitar in drop tuning -- 55Hz to 110Hz, all
+; below the range of anything in Hearthstone's own mix, which is the point: the
+; note has to be audible over the game without competing with it.
+;
+; Generated once into %TEMP% and cached on disk, so the cost is about a second
+; on ONE start-up and nothing thereafter. Nothing here ever runs when the
+; feature is off, and every part of it is wrapped -- an audio failure must never
+; be able to stop a hotkey doing its actual job.
+global _toneFiles := Map()
+
+_ToneFreq(which) {
+    global CFG
+    if (CFG.hotkeyFreqMode = "varied") {
+        ; map which to the corresponding config key
+        static map := Map("F1", "hotkeyFreqF1"
+                        , "F2", "hotkeyFreqF2"
+                        , "F3", "hotkeyFreqF3"
+                        , "F4", "hotkeyFreqF4")
+        key := map.Get(which, "")
+        if (key != "" && CFG.%key% > 0)
+            return CFG.%key%
+        ; fall through to singular if individual is 0 or missing
+    }
+    ; singular mode or fallback
+    return CFG.hotkeyFreqSingular ? CFG.hotkeyFreqSingular : 110.0
+}
+
+; Build one 16-bit mono WAV of a plucked, overdriven low string.
+_WriteGuitarWav(path, freq, durMs, vol) {
+    static SR := 22050          ; twice the highest harmonic we generate, and
+                                ; half the samples of CD rate -- for a 110Hz
+                                ; note with 5 harmonics that is ample.
+    n     := Round(SR * durMs / 1000)
+    bytes := n * 2
+    buf   := Buffer(44 + bytes, 0)
+
+    NumPut("UInt",   0x46464952, buf,  0)   ; "RIFF"
+    NumPut("UInt",   36 + bytes, buf,  4)
+    NumPut("UInt",   0x45564157, buf,  8)   ; "WAVE"
+    NumPut("UInt",   0x20746D66, buf, 12)   ; "fmt "
+    NumPut("UInt",   16,         buf, 16)   ; PCM header size
+    NumPut("UShort", 1,          buf, 20)   ; format = PCM
+    NumPut("UShort", 1,          buf, 22)   ; channels = mono
+    NumPut("UInt",   SR,         buf, 24)   ; sample rate
+    NumPut("UInt",   SR * 2,     buf, 28)   ; byte rate
+    NumPut("UShort", 2,          buf, 32)   ; block align
+    NumPut("UShort", 16,         buf, 34)   ; bits per sample
+    NumPut("UInt",   0x61746164, buf, 36)   ; "data"
+    NumPut("UInt",   bytes,      buf, 40)
+
+    twoPi := 6.283185307179586
+    Loop n {
+        ; The outer index is CAPTURED, not read twice.
+        ;
+        ; A_Index belongs to the innermost enclosing loop, so every read of it
+        ; after the harmonic loop below is a read of a value that loop was also
+        ; writing. AutoHotkey does restore it -- but a sample buffer whose write
+        ; offset depends on that restore working is a buffer that is silently
+        ; wrong if it ever does not. One local removes the question.
+        i := A_Index
+        t := (i - 1) / SR
+
+        ; Harmonic stack. Higher partials decay faster -- a real string loses
+        ; its brightness long before it loses its fundamental.
+        s := 0.0
+        Loop 5 {
+            k    := A_Index
+            amp  := (1.0 / k) * Exp(-t * 2.2 * k)
+            s    += amp * Sin(twoPi * freq * k * t)
+        }
+
+        ; Valve-style soft clip: drive it, then round the peaks off.
+        s *= 1.9
+        if (s > 1.0)
+            s := 1.0
+        else if (s < -1.0)
+            s := -1.0
+        else
+            s := s - (s * s * s) / 3.0
+
+        ; 5ms pick attack, then a slow ring-out.
+        env := (t < 0.005) ? (t / 0.005) : Exp(-t * 3.0)
+
+        ; RELEASE TAPER over the final 80ms.
+        ; The exponential decay above is still at roughly a fifth of full
+        ; amplitude when the buffer runs out, and a waveform that stops at a
+        ; non-zero value is a step change -- which is a click. The taper walks
+        ; the last 80ms to true zero so the note ends instead of being cut off.
+        rel := (durMs / 1000.0) - t
+        if (rel < 0.08)
+            env *= (rel > 0) ? (rel / 0.08) : 0
+
+        v := Round(s * env * 30000 * vol)
+        if (v >  32767)
+            v :=  32767
+        else if (v < -32768)
+            v := -32768
+        NumPut("Short", v, buf, 44 + (i - 1) * 2)
+    }
+
+    f := FileOpen(path, "w")
+    if !f {
+        _FSLog("AUDIO could not open " . path . " for writing")
         return false
-    return SetAppMuteByPID(pid, true)
+    }
+    f.RawWrite(buf, buf.Size)
+    f.Close()
+    return FileExist(path) ? true : false
+}
+
+; Build all four notes if they are not already on disk. Safe to call twice.
+; All notes are generated with the frequency returned by _ToneFreq(which),
+; which is now configurable. The volume is controlled by CFG.hotkeyAudioVolume.
+;
+; Logs what it did rather than only that it finished. "Nothing happened when I
+; turned the sound on" is impossible to diagnose from a line that says
+; everything is fine, so this records the file, its size, and any step that
+; failed -- and reports a count of what actually exists rather than a count of
+; what it attempted.
+EnsureHotkeyTones() {
+    global CFG, _toneFiles
+    if !CFG.hotkeyAudio {
+        _FSLog("AUDIO EnsureHotkeyTones called with hotkeyAudio OFF -- nothing"
+             . " to build. If you set HotkeyAudio=1, the script did not read"
+             . " the file you edited: check the CONFIG line above for the path"
+             . " it actually used.")
+        return
+    }
+    vol   := CFG.hotkeyAudioVolume / 100.0
+    built := 0
+    for which in ["F1", "F2", "F3", "F4"] {
+        try {
+            freq := _ToneFreq(which)
+            ; The volume and frequency are in the filename so a changed setting
+            ; regenerates instead of silently playing the old tone.
+            path := A_Temp . "\hsbg_tone_" . which . "_"
+                  . Round(freq * 100) . "_" . CFG.hotkeyAudioVolume . ".wav"
+            if !FileExist(path)
+                _WriteGuitarWav(path, freq, 550, vol)
+            if FileExist(path) {
+                _toneFiles[which] := path
+                built += 1
+            } else {
+                _FSLog("AUDIO " . which . " could not be built at " . path)
+            }
+        } catch as e {
+            _FSLog("AUDIO " . which . " generation threw: " . e.Message)
+        }
+    }
+    _FSLog("AUDIO " . built . " of 4 hotkey notes ready, volume "
+         . CFG.hotkeyAudioVolume . " (files in " . A_Temp . ")")
+}
+
+; Play the note for a hotkey.
+;
+; NEVER BLOCKS THE KEY. Everything is pushed onto its own thread by the -1
+; timer: building a waveform takes a moment and even SoundPlay touches the
+; audio engine, and F1's job is to skip a combat animation, not to wait for a
+; sound card. A press whose note is late is fine; a press that is late is not.
+_HotkeyTone(which) {
+    global CFG
+    if !CFG.hotkeyAudio
+        return
+    try SetTimer(_PlayHotkeyTone.Bind(which), -1)
+}
+
+_PlayHotkeyTone(which) {
+    global CFG, _toneFiles
+    ; If a custom sound file is specified and exists, play it for any hotkey.
+    if (CFG.hotkeySoundFile != "" && FileExist(CFG.hotkeySoundFile)) {
+        try {
+            SoundPlay(CFG.hotkeySoundFile)
+            return
+        } catch {
+            ; fall through to default if custom file fails
+        }
+    }
+
+    if _toneFiles.Has(which) {
+        try SoundPlay(_toneFiles[which])
+        return
+    }
+    ; Not built yet -- the start-up build may not have run, or may have failed.
+    ; Build now, and if that still produces nothing, fall back to the system
+    ; beep at the same pitch. A thin beep is a poor note but it is unambiguous
+    ; evidence that the setting is on and the script is trying, which is far
+    ; more useful than silence.
+    try EnsureHotkeyTones()
+    if _toneFiles.Has(which) {
+        try SoundPlay(_toneFiles[which])
+        return
+    }
+    try SoundBeep(Round(_ToneFreq(which)), 150)
+}
+
+; Tray-menu diagnostic. Answers "I turned it on and nothing happened" in one
+; click, on screen, without asking anyone to read a log file.
+; ── "WHAT IS UNDER MY CURSOR?" ──────────────────────────────────────────────
+; Hold the cursor over the spot where clicks are being lost and pick this from
+; the tray. It names the window that will actually receive the click.
+;
+; This exists because "clicks do not register" has several possible causes that
+; look identical from the outside -- an invisible cloaked window sitting over
+; the game, the game not being foreground, or the script's own F1 mouse shield
+; being active -- and guessing between them from a description has cost several
+; rounds. This reports all three at once, from the same call, in the state they
+; are in at the moment of the complaint.
+;
+; A five-second countdown first, so there is time to move the cursor onto the
+; game after picking the menu item.
+WhatIsUnderCursor() {
+    BgHUD.Show("Move the cursor over the spot that will not click — reading in 5s", 5000)
+    SetTimer(_WhatIsUnderCursorNow, -5000)
+}
+
+_WhatIsUnderCursorNow() {
+    global InputShield, _ipBlockOn
+    try {
+        MouseGetPos(&mx, &my, &hwnd)
+        if !hwnd {
+            BgHUD.Show("No window under the cursor", 6000)
+            return
+        }
+        title := "", cls := "", exe := "", ex := 0, st := 0
+        try title := WinGetTitle("ahk_id " . hwnd)
+        try cls   := WinGetClass("ahk_id " . hwnd)
+        try exe   := WinGetProcessName("ahk_id " . hwnd)
+        try ex    := WinGetExStyle("ahk_id " . hwnd)
+        try st    := WinGetStyle("ahk_id " . hwnd)
+        cloaked := IsWindowCloakedDWM(hwnd) ? "YES" : "no"
+        topmost := (ex & 0x8) ? "YES" : "no"
+        thru    := (ex & 0x20) ? "YES" : "no"
+        fg      := DllCall("user32\GetForegroundWindow", "Ptr")
+
+        msg := exe . "  |  cloaked=" . cloaked . "  topmost=" . topmost
+             . "  |  " . (hwnd = fg ? "has focus" : "NOT the foreground window")
+        BgHUD.Show(msg, 10000)
+
+        _FSLog("CURSOR-PROBE at " . mx . "," . my
+             . " hwnd=" . hwnd
+             . " exe=" . exe
+             . " title=`"" . title . "`""
+             . " class=" . cls
+             . " ex=" . Format("0x{:X}", ex)
+             . " style=" . Format("0x{:X}", st)
+             . " cloaked=" . cloaked
+             . " topmost=" . topmost
+             . " clickthrough=" . thru
+             . " isForeground=" . (hwnd = fg ? 1 : 0)
+             . " | shield.active=" . (InputShield.active ? 1 : 0)
+             . " shield.mode=" . InputShield.mode
+             . " ipBlockOn=" . (_ipBlockOn ? 1 : 0))
+    }
+}
+
+TestHotkeySound() {
+    global CFG, _toneFiles
+    if !CFG.hotkeyAudio {
+        BgHUD.Show("Sound is OFF in " . _ConfigPath(), 6000)
+        _FSLog("AUDIO test: hotkeyAudio is FALSE. Config read from "
+             . _ConfigPath())
+        return
+    }
+    EnsureHotkeyTones()
+    if !_toneFiles.Has("F2") {
+        BgHUD.Show("Sound ON but the note could not be built — see the log", 6000)
+        return
+    }
+    BgHUD.Show("Playing F2 note — volume " . CFG.hotkeyAudioVolume, 2500)
+    try SoundPlay(_toneFiles["F2"])
 }
 
 UnmuteHearthstone() {
@@ -1121,22 +1875,53 @@ GetHSRealWindows() {
     return windows
 }
 
-MouseIsOverRealHSWindow() {
-    MouseGetPos(, , &hwnd)
-    if !hwnd
+
+; ── THE #HotIf FOR THE MOUSE SHIELD. IT MUST BE CHEAP AND IT MUST BE EXACT. ──
+;
+; This expression is evaluated by AutoHotkey's INPUT HOOK on every single mouse
+; click, before the click is delivered. The hook has a short deadline: an
+; expression that takes too long is abandoned and the PREVIOUS result is reused,
+; and while it is running no input is processed at all. The symptom of getting
+; that wrong is unmistakable and was reported -- clicks stop registering, and
+; come back only when the cursor crosses into a different window and forces the
+; criterion to be re-evaluated.
+;
+; Two rules follow, and both are load-bearing:
+;
+;   1. THE CHEAPEST TEST FIRST. _ipBlockOn is a plain boolean and is the real
+;      precondition: the shield exists to stop a stray click during an F1
+;      firewall block, so with no block in place there is nothing to shield.
+;      With this first, the expensive part below is unreachable except during
+;      the two seconds of an actual F1 press.
+;
+;   2. NO WINDOW ENUMERATION. MouseIsOverRealHSWindow used to call
+;      GetHSRealWindows, which enumerates every Hearthstone window and queries
+;      the class and rectangle of each -- inside the hook, per click. It is
+;      replaced by a single process-ID comparison on the window under the
+;      cursor, which is one call and answers the same question.
+HS_MouseShieldActive() {
+    global InputShield, _ipBlockOn
+    if !(_ipBlockOn && InputShield.active && InputShield.mode = "F1")
         return false
-    for hsHwnd in GetHSRealWindows() {
-        if (hsHwnd = hwnd)
-            return true
-    }
-    return false
+    return _MouseIsOverHSProcess()
 }
 
-HS_MouseShieldActive() {
-    global InputShield
-    return InputShield.active
-        && (InputShield.mode = "F1")
-        && MouseIsOverRealHSWindow()
+; Is the cursor over a window belonging to Hearthstone? One WindowFromPoint plus
+; one GetWindowThreadProcessId -- no enumeration, no title reads, no
+; DetectHiddenWindows toggling. Safe to run inside the input hook.
+_MouseIsOverHSProcess() {
+    try {
+        pid := GetHSPID()
+        if !pid
+            return false
+        MouseGetPos(, , &hwnd)
+        if !hwnd
+            return false
+        wpid := 0
+        DllCall("user32\GetWindowThreadProcessId", "Ptr", hwnd, "UInt*", &wpid)
+        return (wpid = pid)
+    }
+    return false
 }
 
 ; F1 cursor shield: swallow clicks/wheel only while the cursor is over a real
@@ -1389,7 +2174,8 @@ BNetMainWindowExists() {
 ; client-start -> reveal -> render dwell, and fires LaunchWTCG only at the end.
 ; Cheap when its stage is already satisfied, so it is safe to call every tick.
 TryLaunchWTCG() {
-    global CFG, _bnetRevealedAt, _bnetLaunchFiredAt, _bnetPostMinDone
+    global CFG, _bnetRevealedAt, _bnetLaunchFiredAt, _bnetPlayFiredAt, _bnetPostMinDone
+    global _bnetReadyAt
     global _bnetLauncherHwnd
     if !ProcessExist("Battle.net.exe") {
         if StartBNetClient()
@@ -1431,6 +2217,66 @@ TryLaunchWTCG() {
 
     ; --- Stage 3: fire the launch command, UNFOCUSED, exactly once ---
     if (_bnetLaunchFiredAt = 0) {
+        ; ── THE LAUNCHER MUST HAVE FINISHED ARRIVING ───────────────────────
+        ; Stage 1 proves a client window EXISTS. That is not the same as a
+        ; client that has finished LOADING, and on a machine already busy -- a
+        ; game running in the background was the reported case -- the gap
+        ; between the two stretches. Firing Play into a half-built client and
+        ; then minimising it 1250ms later is how the launcher ended up
+        ; minimised before it had loaded.
+        ;
+        ; So the launcher has to look like a window someone could actually use:
+        ; on screen, not minimised, and at a real size rather than the small
+        ; placeholder rect a CEF window is born with. The dwell floor runs
+        ; alongside it, so a slow machine and a fast one wait for the same
+        ; EVIDENCE rather than for the same stopwatch.
+        ; WAIT FOR READINESS, BUT NEVER FOREVER.
+        ;
+        ; The readiness test is evidence, not a guarantee it will ever be
+        ; satisfied. It cannot be, in two real configurations: with
+        ; bnetLauncherMode="minimized" the launcher is minimised ON PURPOSE and
+        ; the not-minimised check can never pass; and a user whose Battle.net
+        ; window is remembered smaller than the size floor, on a single monitor
+        ; where the reveal never resizes it, would fail it every time.
+        ;
+        ; Either would mean Play is never pressed and Hearthstone never starts
+        ; -- a hang, not a race fix. So the wait is BOUNDED: past the ceiling
+        ; the command fires regardless, and the launch proceeds as it did
+        ; before this gate existed. A launcher that minimises a little early is
+        ; a cosmetic complaint; a launcher that never launches is not.
+        ; ── THE DWELL IS MEASURED FROM "READY", NOT FROM "EXISTS" ──────────
+        ; This is what makes the sequence take the same time every launch.
+        ;
+        ; _bnetRevealedAt is stamped when a client WINDOW EXISTS. The wait for
+        ; that window to be usable is Battle.net's business and varies wildly --
+        ; near zero when the client was already running, several seconds on a
+        ; cold start or a busy machine. Measuring the dwell from that stamp
+        ; meant the launcher's time on screen was (variable readiness wait) plus
+        ; the dwell, so no two launches looked alike.
+        ;
+        ; Anchoring to the moment it becomes READY makes the part this script
+        ; controls a constant: from "the launcher is up and usable" to "the
+        ; launcher is gone" is always bnetRevealDwellMs + bnetPostPlayLingerMs.
+        ; How long Battle.net took to get there still varies, but that is time
+        ; the user spends watching a launcher boot, not time the script added.
+        if (CFG.bnetLauncherMode != "minimized" && !_bnetReadyAt) {
+            if _BNetLauncherLooksReady() {
+                _bnetReadyAt := A_TickCount
+                _FSLog("BNET-TIMING launcher ready "
+                     . (_bnetReadyAt - _bnetRevealedAt) . "ms after its window"
+                     . " appeared -- the fixed sequence starts now")
+            } else if ((A_TickCount - _bnetRevealedAt) >= CFG.bnetReadyCeilingMs) {
+                _bnetReadyAt := A_TickCount
+                _FSLog("BNET-TIMING readiness ceiling reached -- proceeding anyway")
+            } else {
+                return false
+            }
+        }
+        if !_bnetReadyAt
+            _bnetReadyAt := A_TickCount      ; "minimized" mode: ready by fiat
+        if (A_TickCount - _bnetReadyAt < CFG.bnetRevealDwellMs)
+            return false
+
         ; Hand the foreground away first. Battle.net takes the foreground when
         ; it boots, so if the launch command lands while it still holds it, the
         ; Play button is the focused control of the focused window and Windows
@@ -1456,6 +2302,19 @@ TryLaunchWTCG() {
         }
         LaunchWTCG()
         _bnetLaunchFiredAt := A_TickCount
+        _bnetPlayFiredAt   := A_TickCount
+
+        ; ── THE MINIMIZE IS SCHEDULED, NOT POLLED ──────────────────────────
+        ; BNetMinimizeSequenceTick still owns the decision and still runs as a
+        ; backstop, but it polls at 200ms -- so the launcher's disappearance
+        ; landed anywhere in a 200ms band even when everything else was
+        ; identical. A one-shot timer fires at the interval itself, which is
+        ; the difference between "about a second and a bit" and the same
+        ; interval every time. _bnetPostMinDone makes the duplicate a no-op.
+        SetTimer(_BNetSequenceMinimizeNow, -CFG.bnetPostPlayLingerMs)
+        _FSLog("BNET-TIMING Play fired " . (A_TickCount - _bnetReadyAt)
+             . "ms after ready; minimize scheduled in "
+             . CFG.bnetPostPlayLingerMs . "ms (fixed)")
         return false
     }
 
@@ -1830,14 +2689,50 @@ FindGameServerIPs(hsPID) {
 ; cleanup is a repair or a no‑op.
 global _ipBlockOn := false
 
+; Scope the block to Hearthstone's executable.
+;
+; THIS IS THE FIX FOR "F1 PULLED UP BATTLE.NET".
+;
+; A netsh rule written as `remoteip=<addr>` with nothing else applies to EVERY
+; PROCESS ON THE MACHINE. Blizzard's game and services addresses are shared
+; infrastructure -- the Battle.net client talks to the same hosts Hearthstone
+; does -- so blocking one by address cut the launcher's connection too. The
+; client reacts to a lost connection the way it is designed to: it surfaces
+; itself, un-minimizing over whatever you were doing, and shows a reconnect or
+; disconnected state that sometimes needs a restart to clear. Nothing in this
+; script was "pulling up" Battle.net; the firewall rule was disconnecting it,
+; and it came up on its own.
+;
+; `program=` restricts the rule to one executable's traffic. With it, F1 drops
+; exactly the connection it means to drop and no other process on the machine
+; notices anything -- which is also what makes CFG.f1Target="smart" safe: it
+; deliberately includes Hearthstone's newest SERVICES connection, and without
+; this scoping that meant blocking an address Battle.net was actively using.
+;
+; Returns "" when the path is unknown. An unscoped block is still better than
+; no skip at all, so this degrades rather than refusing -- but it logs, because
+; an unscoped block is the condition that produced the bug.
+_HSProgramScope() {
+    p := GetHSPath()
+    if (p = "") {
+        _FSLog("F1 WARNING: Hearthstone's executable path is unknown, so the"
+             . " firewall rule cannot be scoped to it. The block will apply"
+             . " machine-wide for its duration, which can disconnect the"
+             . " Battle.net client and make it restore itself.")
+        return ""
+    }
+    return ' program="' . p . '"'
+}
+
 ApplyIPBlock(ipsCsv) {
     global CFG, _ipBlockOn
     if (ipsCsv = "")
         return false
     RemoveIPBlock()   ; idempotence — never stack duplicate rules
-    n := CFG.ruleName
-    ec1 := RunWait('netsh advfirewall firewall add rule name="' . n . '_IP_OUT" dir=out action=block remoteip=' . ipsCsv . ' enable=yes profile=any', , "Hide")
-    ec2 := RunWait('netsh advfirewall firewall add rule name="' . n . '_IP_IN" dir=in action=block remoteip=' . ipsCsv . ' enable=yes profile=any', , "Hide")
+    n     := CFG.ruleName
+    scope := _HSProgramScope()
+    ec1 := RunWait('netsh advfirewall firewall add rule name="' . n . '_IP_OUT" dir=out action=block remoteip=' . ipsCsv . scope . ' enable=yes profile=any', , "Hide")
+    ec2 := RunWait('netsh advfirewall firewall add rule name="' . n . '_IP_IN" dir=in action=block remoteip=' . ipsCsv . scope . ' enable=yes profile=any', , "Hide")
     _ipBlockOn := (ec1 == 0 && ec2 == 0)
     if !_ipBlockOn
         RemoveIPBlock()   ; half‑applied is worse than not applied
@@ -1920,16 +2815,35 @@ HSInputShield_Tick() {
 ; ------------------------------------------------------------------------------
 ; HS Hide‑on‑Launch watchdog
 ; ------------------------------------------------------------------------------
-; Hides/minimizes HS for durationMs and keeps it muted throughout.
+; ══════════════════════════════════════════════════════════════════════════════
+;  HEARTHSTONE IS NOT CONCEALED
+; ══════════════════════════════════════════════════════════════════════════════
+; This subsystem used to cloak Hearthstone the instant it appeared, minimize it
+; animation-free, mute it, hold it that way for ten seconds, and then restore,
+; move and uncloak it in one carefully ordered reveal. All of that is gone.
 ;
-; WHY mute is retried in the tick (not called once upfront):
-;   HS's audio session is registered with Windows Core Audio asynchronously —
-;   it often does not exist yet in the first few hundred ms after HS spawns.
-;   A single MuteHearthstone() call at launch time silently fails because
-;   SetAppMuteByPID finds no matching session. The watchdog retries every 50ms
-;   until the session appears and the mute actually takes effect, then stops
-;   retrying. UnmuteHearthstone() is called once in RevealHSAfterLaunch.
-; ------------------------------------------------------------------------------
+; WHY IT IS GONE. Every part of it fought the game for control of its own
+; window, and the game is better at that than we are. Unity re-runs its
+; display-mode setup whenever the window is restored, moved or loses the
+; foreground, so the sequence needed a cloak to hide the churn, a bounded
+; verification loop to catch the snap-back, and a mute to hide the audio of a
+; game the user could not yet see. Each of those was a fix for a problem the
+; concealment itself created -- and none of it survives contact with a machine
+; whose display, DPI or fullscreen mode differs from the one it was written on.
+; Whether Hearthstone opens fullscreen, borderless or windowed, and where, is a
+; setting the user already made inside the game.
+;
+; WHAT REPLACES IT. Nothing, on the concealment side: Hearthstone launches and
+; takes the foreground exactly as it would with this script not running. The
+; monitor preference is still honoured, but through the mechanism the game
+; itself respects -- SetHSMonitorPref writes Unity's own display index before
+; the launch -- with a single corrective move afterwards only if the window
+; actually landed on the wrong screen. See RevealHSAfterLaunch.
+;
+; The function names are unchanged because roughly a dozen call sites, timers
+; and cleanup paths reference them; only the behaviour is different. The watch
+; is now purely a TRIGGER: it waits for the real game window to exist, then
+; hands off to placement once and stops.
 HideHSOnLaunch(durationMs := 10000) {
     StopHSHiddenLaunchWatch()
     StartHSHiddenLaunchWatch(durationMs)
@@ -1939,7 +2853,6 @@ StartHSHiddenLaunchWatch(durationMs := 10000) {
     global State
     State.hsHiddenLaunchActive := true
     State.hsHiddenLaunchUntil  := A_TickCount + durationMs
-    State.hsMuteConfirmed      := false   ; reset mute tracking for this launch cycle
     SetTimer(HSHiddenLaunchWatch, 50)
     HSHiddenLaunchWatch()   ; immediate pass
 }
@@ -1950,6 +2863,13 @@ StopHSHiddenLaunchWatch() {
     SetTimer(HSHiddenLaunchWatch, 0)
 }
 
+; Waits for the game window, then places it. Touches nothing else.
+;
+; The old version ran for a fixed ten seconds no matter what, because it was
+; holding the window hidden for that long. With nothing to hold, waiting out a
+; timer is just latency: the moment a real game window exists there is nothing
+; left to wait for. The deadline survives only as a ceiling, so a launch that
+; never produces a window still releases the timer instead of ticking forever.
 HSHiddenLaunchWatch() {
     global State
 
@@ -1958,45 +2878,23 @@ HSHiddenLaunchWatch() {
         return
     }
 
-    ; Retry mute every tick until it succeeds.
-    if !State.hsMuteConfirmed {
-        if MuteHearthstone()
-            State.hsMuteConfirmed := true
-    }
-
+    seen := false
     prev := A_DetectHiddenWindows
     DetectHiddenWindows true
     for hwnd in WinGetList("ahk_exe Hearthstone.exe") {
         try {
-            if IsIMEWindow(hwnd)
+            if (IsIMEWindow(hwnd) || IsHelperWindow(hwnd))
                 continue
-
-            CloakWindow(hwnd)
-
-            if IsHelperWindow(hwnd)
+            if (WinGetTitle("ahk_id " . hwnd) != "Hearthstone")
                 continue
             WinGetPos(, , &w, &h, "ahk_id " . hwnd)
-            if (w < 600 || h < 400)
-                continue
-
-            ; Animation‑free minimize. WinMinimize was used here previously;
-            ; DWM plays the shrink‑to‑taskbar animation for it, and for a
-            ; CLOAKED window that animation composites as a solid BLACK
-            ; rectangle collapsing into the taskbar — the "black window
-            ; disappearing" flicker at the moment Hearthstone got tucked away
-            ; after launch. _MinimizeWindowNoAnim (SetWindowPlacement,
-            ; showCmd=SW_SHOWMINNOACTIVE) changes the placement state
-            ; directly: no animation frames exist and focus is untouched.
-            ; The minState gate keeps this to one placement write per
-            ; restore, never a per‑tick hammer.
-            minState := WinGetMinMax("ahk_id " . hwnd)
-            if (minState != -1)
-                _MinimizeWindowNoAnim(hwnd)
+            if (w >= 600 && h >= 400)
+                seen := true
         }
     }
     DetectHiddenWindows prev
 
-    if (A_TickCount >= State.hsHiddenLaunchUntil) {
+    if (seen || A_TickCount >= State.hsHiddenLaunchUntil) {
         StopHSHiddenLaunchWatch()
         RevealHSAfterLaunch()
     }
@@ -2007,31 +2905,125 @@ HSHiddenLaunchWatch() {
 ; centred in that monitor's work area. With the flag off it is centred within
 ; whatever monitor it restored onto.
 ;
-; ORDER MATTERS -- restore, then move, then uncloak, per window:
+; ── Monitor-index safety ─────────────────────────────────────────────────────
+; ChosenMonIdx is resolved once, at start-up, and never revalidated. Monitor
+; counts change underneath a running script -- a laptop is undocked, a cable is
+; pulled, a display sleeps -- and MonitorGetWorkArea THROWS on an index that is
+; no longer in range. Several call sites cloak or park a window before that
+; call and uncloak it after, so the throw stranded the window invisible with no
+; path back.
 ;
-;   1. SW_RESTORE while STILL CLOAKED. The window arrives here minimised, and
-;      WinGetPos on a minimised window reports the minimised rectangle, so any
-;      move computed from it is meaningless. Restoring under the cloak is
-;      invisible: DWM renders neither the window nor its restore animation.
-;   2. WinMove to the target monitor while STILL CLOAKED, using the real
-;      restored rectangle. Invisible for the same reason.
-;   3. Uncloak. The first frame the user sees is already at its final position
-;      on the correct monitor.
+; _ValidMonIdx is the one place that decides whether an index is still real.
+; _SafeWorkArea and _SafeMonitorRect never throw: they fall back to the primary
+; monitor, and to the virtual desktop if even that fails. A wrong-but-visible
+; monitor is always better than an exception in the middle of a window
+; transition.
+_ValidMonIdx(idx) {
+    try {
+        n := MonitorGetCount()
+        if (idx >= 1 && idx <= n)
+            return idx
+        return MonitorGetPrimary()
+    }
+    return 1
+}
+
+_SafeWorkArea(idx, &l, &t, &r, &b) {
+    try {
+        MonitorGetWorkArea(_ValidMonIdx(idx), &l, &t, &r, &b)
+        return true
+    }
+    try {
+        MonitorGetWorkArea(MonitorGetPrimary(), &l, &t, &r, &b)
+        return true
+    }
+    l := SysGet(76), t := SysGet(77)
+    r := l + SysGet(78), b := t + SysGet(79)
+    return true
+}
+
+_SafeMonitorRect(idx, &l, &t, &r, &b) {
+    try {
+        MonitorGet(_ValidMonIdx(idx), &l, &t, &r, &b)
+        return true
+    }
+    return _SafeWorkArea(idx, &l, &t, &r, &b)
+}
+
+; Put the game on the monitor the user launched the script from -- and nothing
+; else.
+;
+; Deliberately narrow. It moves the window only when the window is on the WRONG
+; monitor; a window already on the right screen is left exactly where the game
+; put it, because at that point its position is the user's business.
+;
+; A fullscreen-shaped window (its rect matches a whole monitor, work area
+; ignored) is relocated to the target monitor's FULL bounds rather than centred
+; in the work area, so a fullscreen game stays fullscreen instead of being
+; shrunk to sit above the taskbar.
+_PlaceHSOnChosenMonitor(hwnd) {
+    global CFG, ChosenMonIdx
+    if (!CFG.lockWindowsToChosenMonitor || !ChosenMonIdx)
+        return false
+    ; Single monitor: there is no wrong screen. Every correction below would be
+    ; a no-op, and the verification loop after it would be pure latency.
+    try {
+        if (MonitorGetCount() <= 1)
+            return false
+    }
+    idx := _ValidMonIdx(ChosenMonIdx)
+    try {
+        WinGetPos(&x, &y, &w, &h, "ahk_id " . hwnd)
+        if (w < 600 || h < 400)
+            return false
+        if (GetMonitorIndexForPoint(x + w // 2, y + h // 2) = idx)
+            return false            ; already right: hands off
+
+        ; Is it covering a whole monitor? Then keep it covering a whole one.
+        srcIdx := GetMonitorIndexForPoint(x + w // 2, y + h // 2)
+        _SafeMonitorRect(srcIdx, &sl, &st, &sr, &sb)
+        fullscreen := (x <= sl && y <= st && (x + w) >= sr && (y + h) >= sb)
+
+        if fullscreen {
+            _SafeMonitorRect(idx, &dl, &dt, &dr, &db)
+            WinMove(dl, dt, dr - dl, db - dt, "ahk_id " . hwnd)
+        } else {
+            _SafeWorkArea(idx, &waL, &waT, &waR, &waB)
+            waW := waR - waL, waH := waB - waT
+            nx := (w <= waW) ? waL + (waW - w) // 2 : waL
+            ny := (h <= waH) ? waT + (waH - h) // 2 : waT
+            WinMove(nx, ny, , , "ahk_id " . hwnd)
+        }
+        _FSLog("HS-PLACE moved to monitor " . idx
+             . (fullscreen ? " (fullscreen-shaped)" : " (windowed)"))
+        return true
+    }
+    return false
+}
+
+; NOTHING HERE SHOWS THE WINDOW -- the game did that itself. This is placement
+; and cleanup only.
 ;
 ; Design rules, which prevent cross-monitor side effects:
-;   * No MouseMove anywhere.
-;   * No WinActivate. SW_RESTORE already activates and foregrounds the window;
-;     an extra activation on a borderless DXGI window fresh out of a cloak
-;     forces a swapchain reshuffle that can flash other monitors.
-;   * No WinSetAlwaysOnTop -- never set, so never cleared.
+;   * No MouseMove, no WinActivate, no WinSetAlwaysOnTop, no cloak. Every one
+;     of those pokes a borderless DXGI window into re-running its display-mode
+;     setup, which is the flicker they were each added to hide.
+;   * MOVE ONLY IF WRONG. The window is corrected when it landed on a monitor
+;     the user did not ask for, and otherwise left exactly where the game put
+;     it. Re-centring a window that is already on the right screen would
+;     override a position the user chose.
+;   * A fullscreen-exclusive window is never moved. It cannot be, meaningfully,
+;     and trying makes Unity renegotiate the display for no benefit.
 ;
-; Only the real game window (exact title "Hearthstone", at least 600x400) is
-; moved; small internal bootstrap windows are only uncloaked.
+; The uncloak/enable calls remain as REPAIRS, not as part of a reveal: an
+; earlier build of this script, or an instance killed mid-launch, can leave a
+; Hearthstone window cloaked, and something has to be willing to undo that.
+; They are no-ops on a window nobody concealed.
 RevealHSAfterLaunch() {
     global CFG, ChosenMonIdx, _hsRevealed
     StopHSHiddenLaunchWatch()
     StopHSCloaker()
-    try UnmuteHearthstone()
+    try UnmuteHearthstone()   ; repair: undo a mute left by an older build
 
     ; Release the launcher's foreground pin. The minimize normally does this
     ; first, but "normally" is not a guarantee -- a slow client, a retry, or a
@@ -2057,62 +3049,13 @@ RevealHSAfterLaunch() {
                 continue
             }
 
-            ; ---- 1. Restore while still cloaked ----
-            if !DllCall("user32\IsWindowVisible", "Ptr", hwnd)
-                DllCall("ShowWindow", "Ptr", hwnd, "Int", 8)   ; SW_SHOWNA
-            if (WinGetMinMax("ahk_id " . hwnd) = -1) {
-                DllCall("ShowWindow", "Ptr", hwnd, "Int", 9)   ; SW_RESTORE
-                ; Wait (bounded) for the restore to complete so WinGetPos
-                ; below reads the real rect.
-                deadline := A_TickCount + 600
-                while (A_TickCount < deadline && WinGetMinMax("ahk_id " . hwnd) = -1)
-                    Sleep(15)
-            }
-
-            ; ---- 2. Move while still cloaked ----
-            try {
-                WinGetPos(&curX, &curY, &curW, &curH, "ahk_id " . hwnd)
-                if (curW >= 600 && curH >= 400) {
-                    monIdx := (CFG.lockWindowsToChosenMonitor && ChosenMonIdx)
-                        ? ChosenMonIdx
-                        : GetMonitorIndexForPoint(curX + curW // 2, curY + curH // 2)
-                    MonitorGetWorkArea(monIdx, &waL, &waT, &waR, &waB)
-                    waW := waR - waL
-                    waH := waB - waT
-                    newX := (curW <= waW) ? waL + (waW - curW) // 2 : waL
-                    newY := (curH <= waH) ? waT + (waH - curH) // 2 : waT
-                    if (curX != newX || curY != newY)
-                        WinMove(newX, newY, , , "ahk_id " . hwnd)
-
-                    ; ---- 2b. Verify the move stuck -- STILL CLOAKED ----
-                    ; Unity's display-mode setup reacts to the restore
-                    ; ASYNCHRONOUSLY and can snap the window back to its
-                    ; remembered monitor (usually the PRIMARY) a few frames
-                    ; later. Catching that here, before the uncloak, keeps
-                    ; the correction invisible instead of a visible
-                    ; cross-monitor flicker. We extend the watch window to
-                    ; 1500ms to give Unity ample time to settle.
-                    deadline2 := A_TickCount + 1500   ; increased from 900ms
-                    loop {
-                        Sleep(40)
-                        vx := 0, vy := 0, vw := 0, vh := 0
-                        try WinGetPos(&vx, &vy, &vw, &vh, "ahk_id " . hwnd)
-                        catch
-                            break
-                        if (vw >= 600 && vh >= 400
-                         && GetMonitorIndexForPoint(vx + vw // 2, vy + vh // 2) != monIdx) {
-                            nx2 := (vw <= waW) ? waL + (waW - vw) // 2 : waL
-                            ny2 := (vh <= waH) ? waT + (waH - vh) // 2 : waT
-                            try WinMove(nx2, ny2, , , "ahk_id " . hwnd)
-                        }
-                        if (A_TickCount >= deadline2)
-                            break
-                    }
-                }
-            }
-
-            ; ---- 3. Only now let DWM render it ----
+            ; ---- Repair, not reveal ----
+            ; The game shows its own window. These only undo concealment left
+            ; behind by an earlier build or a killed instance.
             UncloakWindow(hwnd)
+
+            ; ---- Correct the monitor, and only that ----
+            _PlaceHSOnChosenMonitor(hwnd)
             _hsRevealed[hwnd] := true
 
         } catch {
@@ -2445,17 +3388,97 @@ StopOWCreateHook() {
 }
 
 ; Exact matcher for the Firestone loading popup.
+; Close a window WITHOUT waiting for it to go.
+;
+; AutoHotkey's WinClose sends WM_CLOSE and then BLOCKS until the window is gone
+; or its timeout expires. Every call site here targets an Overwolf/Firestone
+; window, and the whole point of these closers is that they run when Firestone
+; is misbehaving -- so the moment WinClose is called is the moment the target
+; is most likely to be hung. AutoHotkey is single-threaded: that block freezes
+; the ENTIRE script, hotkeys included, and every watchdog that would recover it
+; is a timer, so nothing runs to save it. A user reported exactly this after a
+; Firestone crash -- no F-keys at all for the rest of the session.
+;
+; PostMessage puts WM_CLOSE on the window's queue and returns immediately. A
+; healthy window closes exactly as before; a hung one stops being our problem.
+; Nothing downstream needed the close to have completed on return -- every
+; caller re-checks on its next tick.
+_CloseWindowAsync(hwnd) {
+    static WM_CLOSE := 0x0010
+    try return PostMessage(WM_CLOSE, 0, 0, , "ahk_id " . hwnd)
+    return false
+}
+
 IsLikelyFirestoneLoadingPopupHwnd(hwnd) {
     try {
         exe := WinGetProcessName("ahk_id " . hwnd)
         if (exe != "Overwolf.exe" && exe != "OverwolfBrowser.exe")
             return false
         title := WinGetTitle("ahk_id " . hwnd)
-        return (title = "Firestone - Loading")
+        if (title = "Firestone - Loading")
+            return true
+
+        ; BARE "Firestone" IN THE POPUP SIZE ENVELOPE COUNTS TOO.
+        ;
+        ; Firestone's start-up window ("Getting ready", with the spinner) is
+        ; titled just "Firestone" -- not "Firestone - Loading". Matching only
+        ; the hyphenated title meant this dedicated suppressor, the one armed
+        ; at 10ms BEFORE the process even exists, never saw the window that is
+        ; actually on screen during start-up. It fell through to the general
+        ; sweep, which runs later and had more ways to decline.
+        ;
+        ; Widening it here only ever adds CONCEALMENT -- this path cloaks, it
+        ; does not close -- so the cost of a false match is a window that is
+        ; hidden a moment earlier than it would have been anyway.
+        if (title != "Firestone")
+            return false
+        if _CoversMostOfItsMonitor(hwnd)      ; the overlay: never
+            return false
+        ex := 0
+        try ex := WinGetExStyle("ahk_id " . hwnd)
+        if (ex & 0x20)                        ; WS_EX_TRANSPARENT: click-through
+            return false
+        w := 0, h := 0
+        try WinGetPos(, , &w, &h, "ahk_id " . hwnd)
+        return (w >= 300 && h >= 300 && w <= 800 && h <= 800)
     } catch {
     }
     return false
 }
+; Does this window cover most of the monitor it is sitting on?
+;
+; THIS REPLACES A FIXED 1600x1000 PIXEL CAP, which was the script's way of
+; saying "too big to be a popup, therefore it is the in-game overlay". That
+; test is only correct on a monitor bigger than the cap. On a 1366x768 or
+; 1600x900 display -- ordinary single-monitor and laptop resolutions -- the
+; overlay is SMALLER than the cap, so the check that existed to protect it
+; instead waved it through: the overlay could be classified as the loading
+; splash and concealed, or judged parkable and moved off screen. Neither can
+; happen on the 1440p+ monitor the script was written on, which is exactly why
+; it was never seen.
+;
+; Expressed as a FRACTION of the monitor, the same rule holds at every
+; resolution and every DPI: the overlay is game-screen sized by definition, and
+; no popup is. The script uses aspect-ratio reasoning elsewhere for the same
+; reason -- see _IsProtectedBNetMain, which notes that pixel sizes are not
+; DPI-proof.
+_CoversMostOfItsMonitor(hwnd, w := 0, h := 0) {
+    try {
+        if (!w || !h)
+            WinGetPos(, , &w, &h, "ahk_id " . hwnd)
+        if (w <= 0 || h <= 0)
+            return false
+        WinGetPos(&x, &y, , , "ahk_id " . hwnd)
+        _SafeMonitorRect(GetMonitorIndexForPoint(x + w // 2, y + h // 2)
+            , &ml, &mt, &mr, &mb)
+        mw := mr - ml, mh := mb - mt
+        if (mw <= 0 || mh <= 0)
+            return false
+        return (w * 100 >= mw * 70) && (h * 100 >= mh * 70)
+    }
+    return false
+}
+
 ; Early visual matcher for the Firestone loading popup ONLY.
 ; Used only by the earliest anti‑flicker paths (create hook + early cloak).
 IsLikelyFirestoneLoadingEarlyHwnd(hwnd) {
@@ -2476,10 +3499,12 @@ IsLikelyFirestoneLoadingEarlyHwnd(hwnd) {
         ; can exceed the old 1100x900 cap -- either way it escaped this
         ; matcher, showed untitled, and was only minimized once it titled.
         ; The in-game overlay (the reason an upper cap exists at all) is
-        ; game-screen sized and still excluded.
+        ; game-screen sized and still excluded -- by proportion of its monitor
+        ; rather than by a pixel count, so the exclusion holds on a small
+        ; display too. See _CoversMostOfItsMonitor.
         if (w < 60 || h < 40)
             return false
-        if (w > 1600 || h > 1000)
+        if _CoversMostOfItsMonitor(hwnd, w, h)
             return false
         return true
     } catch {
@@ -2547,7 +3572,16 @@ OWCreateHookProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, d
         ; Overwolf processes, only while locked.
         if (event = EV_CREATE && State.fsMainLocked
          && (exe = "Overwolf.exe" || exe = "OverwolfBrowser.exe")) {
-            if !IsHelperWindow(hwnd) {
+            {
+                ; NO IsHelperWindow GATE HERE. That gate is why the "Getting
+                ; ready" window is painted before anything conceals it:
+                ; Overwolf builds its surfaces OWNED or WS_EX_TOOLWINDOW, so
+                ; the gate was true for exactly the windows this branch exists
+                ; to catch, and they were skipped at the one moment concealment
+                ; is free -- before the window has ever been shown. The funnel
+                ; itself now decides what an unnamed newborn deserves (a cloak),
+                ; which is the right place for that judgement.
+                ;
                 ; BIRTH SUPPRESSION -- routed through the single funnel.
                 ; This used to be an unconditional ShowWindow(SW_HIDE) at
                 ; CREATE. That is the earliest and most damaging of the five
@@ -2584,6 +3618,24 @@ OWCreateHookProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, d
                     _FSLog("FS-COLD re-assert cap reached hwnd=" . hwnd
                          . " -- standing down at event speed, settled sweep owns it")
                 }
+            }
+        }
+
+        ; ---- Firestone popup: killed the instant it names itself ----------
+        ; A CEF window is created without a caption and titled a few
+        ; milliseconds later, so this event -- not CREATE -- is the first moment
+        ; the popup can be told apart from anything else Overwolf makes. Acting
+        ; here is the earliest possible correct kill, and it is why the popup no
+        ; longer survives long enough to be seen.
+        ;
+        ; Not gated on the F3 lock, by design: a notification is never something
+        ; the user asked to see, whatever state their overlay is in.
+        if (event = EV_NAMECHANGE
+         && (exe = "Overwolf.exe" || exe = "OverwolfBrowser.exe")) {
+            try {
+                t := WinGetTitle("ahk_id " . hwnd)
+                if IsFirestoneNotificationPopup(hwnd, t)
+                    _FSKillNotificationPopup(hwnd, "namechange")
             }
         }
 
@@ -2644,7 +3696,7 @@ OWCreateHookProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, d
                                     bw := NumGet(rc,  8, "Int") - bx
                                     bh := NumGet(rc, 12, "Int") - by
                                     if (GetMonitorIndexForPoint(bx + bw // 2, by + bh // 2) != ChosenMonIdx) {
-                                        MonitorGetWorkArea(ChosenMonIdx, &waL, &waT, &waR, &waB)
+                                        _SafeWorkArea(ChosenMonIdx, &waL, &waT, &waR, &waB)
                                         waW := waR - waL
                                         waH := waB - waT
                                         nx := (bw > 0 && bw <= waW) ? waL + (waW - bw) // 2 : waL
@@ -2758,7 +3810,7 @@ OWCreateHookProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, d
             ; in-game overlay must be visible.
             if _fsBirthHidden.Has(hwnd) {
                 _MapDrop(_fsBirthHidden, hwnd)
-                try DllCall("ShowWindow", "Ptr", hwnd, "Int", 8)   ; SW_SHOWNA
+                _FSShowIfNotPopup(hwnd)
             }
             return
         }
@@ -2783,7 +3835,7 @@ OWCreateHookProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, d
                     _FSReleaseSurface(hwnd)     ; unpark, then uncloak
                     if _fsBirthHidden.Has(hwnd) {
                         _MapDrop(_fsBirthHidden, hwnd)
-                        try DllCall("ShowWindow", "Ptr", hwnd, "Int", 8)  ; SW_SHOWNA
+                        _FSShowIfNotPopup(hwnd)
                     }
                 } else {
                     ; Suppressed. This branch fires the INSTANT the window
@@ -2936,12 +3988,12 @@ KillFirestoneLoadingExisting() {
                 try {
                     if (WinGetTitle("ahk_id " . h) == "Firestone - Loading") {
                         ; Suppress, don't close (see CFG.fsCloseLoadingPopup).
-                        ; On the same-HWND Loading->Main retitle this WinClose
+                        ; On the same-HWND Loading->Main retitle this close
                         ; lands on Firestone - Main, and with close-to-tray on
                         ; that leaves the window alive but gutted.
                         CloakWindow(h)
                         if (CFG.fsCloseLoadingPopup && fsMainTitled)
-                            WinClose("ahk_id " . h)
+                            _CloseWindowAsync(h)
                     }
                 }
             }
@@ -2951,8 +4003,9 @@ KillFirestoneLoadingExisting() {
 }
 
 ; ── PowerShell‑based Firestone - Loading closer ──────────────────────────────
-; Debounced to at most once per 500ms because powershell.exe has ~300ms startup
-; latency and this function is invoked from the 50ms KillFirestoneLoading timer.
+; Debounced to at most once per 100ms to close the popup faster.
+; Powershell.exe startup latency is ~300ms, but the debounce is now shorter
+; to allow more frequent attempts while still avoiding a flood.
 global _LastFSLoadingPSCloseTick := 0
 _FireFirestoneLoadingPSClose() {
     global _LastFSLoadingPSCloseTick, CFG
@@ -2961,7 +4014,7 @@ _FireFirestoneLoadingPSClose() {
     ; with close-to-tray enabled a stray hit leaves a live but gutted window.
     if !CFG.fsCloseLoadingPopup
         return
-    if (A_TickCount - _LastFSLoadingPSCloseTick < 500)
+    if (A_TickCount - _LastFSLoadingPSCloseTick < 100)   ; reduced debounce
         return
     _LastFSLoadingPSCloseTick := A_TickCount
 
@@ -2981,6 +4034,44 @@ _FireFirestoneLoadingPSClose() {
 ; First sighting of every Overwolf top-level window, used only by the
 ; diagnostic below. See the FS-LOADING log line for what it answers.
 global _fsOWFirstSeen := Map()
+
+; ── "Why is that window still on screen?" ────────────────────────────────────
+; Records any Firestone-family window that is VISIBLE while the lock is on and
+; nothing has concealed it. That combination should not occur, so a line here
+; is always a bug -- and it carries the four facts needed to identify which
+; one: the title, the size, the extended styles, and whether the lock was
+; actually on at the time.
+;
+; This exists because the last three reports of "it was not hidden" each had
+; several plausible explanations and no way to choose between them. Once per
+; window, so a 10ms sweep cannot flood the log.
+global _fsVisibleLogged := Map()
+_FSLogVisibleSurface(hwnd) {
+    global _fsVisibleLogged, State
+    try {
+        if _fsVisibleLogged.Has(hwnd)
+            return
+        if !DllCall("user32\IsWindowVisible", "Ptr", hwnd)
+            return
+        title := WinGetTitle("ahk_id " . hwnd)
+        if (title = "" || !InStr(title, "Firestone"))
+            return
+        if (title = "Firestone - Overlays")      ; supposed to be visible
+            return
+        if IsWindowCloakedDWM(hwnd)              ; concealed after all
+            return
+        _fsVisibleLogged[hwnd] := true
+        w := 0, h := 0, ex := 0, st := 0
+        try WinGetPos(, , &w, &h, "ahk_id " . hwnd)
+        try ex := WinGetExStyle("ahk_id " . hwnd)
+        try st := WinGetStyle("ahk_id " . hwnd)
+        _FSLog("FS-VISIBLE unconcealed Firestone window hwnd=" . hwnd
+             . " title=`"" . title . "`" size=" . w . "x" . h
+             . " ex=" . Format("0x{:X}", ex) . " style=" . Format("0x{:X}", st)
+             . " locked=" . (State.fsMainLocked ? 1 : 0)
+             . " -- this window should have been concealed and was not")
+    }
+}
 
 SuppressFirestoneLoadingTick() {
     global State, _fsHiddenByUs, _fsOWFirstSeen
@@ -3002,8 +4093,10 @@ SuppressFirestoneLoadingTick() {
                         _fsOWFirstSeen[h] := A_TickCount
 
                     isPopup := IsLikelyFirestoneLoadingPopupHwnd(h)
-                    if !isPopup
+                    if !isPopup {
+                        _FSLogVisibleSurface(h)   ; diagnostic only
                         continue
+                    }
 
                     ; ---- WHY THIS LINE EXISTS ----
                     ; This sweep can only match "Firestone - Loading" by exact
@@ -3049,21 +4142,22 @@ SuppressFirestoneLoadingTick() {
 ; Run the exact‑title popup suppression/close loop at 10ms intervals for up to
 ; 60s, while simultaneously keeping the popup suppression burst active.
 StartKillFirestoneLoading() {
-    global State, _fsPopupWatchDone, _fsOWFirstSeen, _fsExemptLogged
+    global State, _fsPopupWatchDone, _fsOWFirstSeen, _fsExemptLogged, _fsVisibleLogged
     State.fsLoadingSeen := false
     ; Fresh measurement per launch. Both maps are diagnostic ledgers scoped to
     ; one Firestone start-up; carrying entries over from a previous F2 would
     ; report an untitled= age measured from the wrong process.
-    _fsOWFirstSeen  := Map()
-    _fsExemptLogged := Map()
+    _fsOWFirstSeen       := Map()
+    _fsExemptLogged      := Map()
+    _fsVisibleLogged     := Map()
     _fsPopupWatchDone := false   ; popup lifecycle open — early cloak waits on it
     SuppressFirestoneLoadingTick()
     KillFirestoneLoading()
     SetTimer(SuppressFirestoneLoadingTick, 10)
-    ; 250 ms, not 10 ms. KillFirestoneLoading no longer suppresses anything --
-    ; it only does bookkeeping and the (disabled by default) PowerShell close.
-    ; Two identical 10 ms suppressors on one HWND was the storm.
-    SetTimer(KillFirestoneLoading, 250)
+    ; KillFirestoneLoading now runs at 50 ms to close the loading popup faster.
+    ; It no longer suppresses anything -- it only does bookkeeping and the
+    ; PowerShell close (now enabled by default via fsCloseLoadingPopup=true).
+    SetTimer(KillFirestoneLoading, 50)
     SetTimer(StopKillFirestoneLoading, -60000)
 }
 
@@ -3086,6 +4180,8 @@ IsFirestoneMainTitle(title) {
 }
 
 ; Matches any Firestone window that should be suppressed at all times.
+; "Firestone - Loading" is deliberately NOT included – it is closed,
+; not toggled with F3.
 IsFirestoneSuppressionTitle(title) {
     return (title = "Firestone - Main" || title = "Firestone - Battlegrounds")
 }
@@ -3108,10 +4204,29 @@ IsFSVisibleTitle(title) {
 ; now. The single decision point -- every janitor asks this instead of
 ; open-coding its own "is this one of ours?" test, which is how the three
 ; reveal paths ended up disagreeing with each other.
+
 FSShouldSuppress(title) {
     global State
     if !State.fsMainLocked
         return false
+    ; ALLOW-LIST, NOT DENY-LIST. DO NOT INVERT THIS AGAIN.
+    ;
+    ; "Should this stay concealed?" is answered by exclusion from a very short
+    ; list of titles that are allowed to be seen -- currently just the in-game
+    ; overlay. Everything else stays concealed while the lock is on.
+    ;
+    ; It was briefly changed to "only suppress windows whose title says
+    ; Firestone", to stop the script managing other Overwolf apps' windows.
+    ; That reasoning was right and the change was in the wrong place: the
+    ; CALLER treats "not suppressed" as "actively show it" and calls
+    ; ShowWindow. So the inversion did not merely stop concealing Overwolf's
+    ; own infrastructure -- "OverWolf Server", untitled CEF frames, windows
+    ; Overwolf itself keeps hidden -- it dragged them onto the desktop as blank
+    ; white rectangles.
+    ;
+    ; The problem it was aimed at is solved where it belongs instead: _FSMayPark
+    ; refuses to park anything it cannot name as Firestone's, so no other app's
+    ; window ever enters the ledger F3 restores from.
     return !IsFSVisibleTitle(title)
 }
 
@@ -3149,6 +4264,169 @@ IsFirestoneBattlegroundsTitle(title) {
 }
 
 ; Matches the "Firestone" notification popup (e.g. "Your abilities are ready!")
+; ══════════════════════════════════════════════════════════════════════════════
+;  THE NOTIFICATION POPUP IS KILLED, NOT MANAGED
+; ══════════════════════════════════════════════════════════════════════════════
+; One function, called from every site that can identify the popup, so there is
+; exactly one answer to "what happens to it": it is cloaked so it never paints,
+; and closed immediately.
+;
+; NO STABILITY WAIT, and that is the change. The sweeper deliberately waited for
+; a window to hold a matching title and size for a stretch before closing it,
+; because a sweep sees windows at arbitrary moments and a half-built window can
+; briefly resemble anything. That caution is unnecessary here: this is reached
+; from the CREATE and NAMECHANGE events, which fire ON the transition, and from
+; the funnel, which has already established identity. The window is killed at
+; its beginning rather than a second and a half into its life.
+;
+; INDEPENDENT OF F3. The lock decides whether Firestone's real windows are on
+; screen. It has no opinion about a notification, and wiring one to the other
+; produced the worst of both: a popup that appeared and disappeared as the user
+; toggled their overlay. Nothing here reads State.fsMainLocked.
+;
+; The identity ledger remains absolute -- a window that has ever carried the
+; Main or Loading title is never closed here, whatever it is titled now.
+; Is a window titled exactly "Firestone - Main" open RIGHT NOW, other than this
+; one? Hidden windows count -- Main is concealed on purpose and is still open.
+;
+; This is the structural guarantee that the thing being closed is not Firestone
+; Main, and it is not a heuristic: if Main exists as its own separate window,
+; then whatever else is sitting there titled bare "Firestone" is, by
+; definition, not Main.
+_FSMainWindowPresent(excludeHwnd := 0) {
+    prev  := A_DetectHiddenWindows
+    DetectHiddenWindows true
+    found := false
+    try {
+        for exe in ["Overwolf.exe", "OverwolfBrowser.exe"] {
+            for h in WinGetList("ahk_exe " . exe) {
+                try {
+                    if (h != excludeHwnd && IsFirestoneMainTitle(WinGetTitle("ahk_id " . h))) {
+                        found := true
+                        break
+                    }
+                }
+            }
+            if found
+                break
+        }
+    }
+    DetectHiddenWindows prev
+    return found
+}
+
+global _fsPopupKilled    := Map()
+global _fsPopupFirstSeen := Map()   ; hwnd -> first sighting, for the grace
+_FSKillNotificationPopup(hwnd, why) {
+    global _fsPopupKilled, _fsPopupFirstSeen, _fsMainCandidate
+    global _fsMainEverOpened, CFG
+    try {
+        if _fsMainCandidate.Has(hwnd)      ; it is, or becomes, Main: never
+            return false
+        if _fsPopupKilled.Has(hwnd)        ; asked once is enough
+            return false
+
+        ; ── THE STRUCTURAL GUARD. DO NOT REMOVE IT AGAIN. ──────────────────
+        ; A bare-"Firestone" window may only be closed while a SEPARATE window
+        ; titled exactly "Firestone - Main" also exists.
+        ;
+        ; The reason is that the title and size cannot tell the notification
+        ; apart from Firestone Main. Main is titled just "Firestone" in some
+        ; states -- while it is loading, showing "Getting ready" -- and at a
+        ; size squarely inside the envelope the popup matcher accepts. They are
+        ; the same window to every static test available.
+        ;
+        ; This guard was in the original sweeper and the fast kill paths added
+        ; later bypassed it. The result was exactly what it sounds like: one F3
+        ; press revealed Main, Main's title changed, the NAMECHANGE handler saw
+        ; a bare-"Firestone" window of popup size, and closed the user's
+        ; Firestone. Speed is worth nothing if it is occasionally aimed at the
+        ; wrong window.
+        ;
+        ; Checked here, in the one function every kill path calls, so no future
+        ; caller can route around it.
+        ;
+        ; TWO WAYS TO SATISFY IT, because requiring (a) alone was too strict: a
+        ; notification arriving while Main is closed could then never be closed
+        ; at all, which is the "popup was not closed" report.
+        ;
+        ;   (a) A separate "Firestone - Main" window exists right now, so this
+        ;       window is provably not Main. Acted on immediately.
+        ;
+        ;   (b) Main has opened at some point this session, this HWND has never
+        ;       carried a Main or Loading title, and it has sat there titled
+        ;       bare "Firestone" for longer than CFG.fsPopupGraceMs. A Main that
+        ;       is still forming retitles within a second or so; a notification
+        ;       keeps that bare title for its whole life. Waiting out that
+        ;       window is the only honest way to separate them when Main is not
+        ;       present to compare against.
+        ;
+        ; EITHER WAY THE WINDOW IS CLOAKED ON FIRST SIGHTING, BEFORE ANY OF THIS.
+        ; Concealment is reversible and costs nothing if the judgement is wrong;
+        ; closing is neither. So it never paints while its identity is settled.
+        CloakWindow(hwnd)
+        _DisableDWMTransitions(hwnd)
+        if !_fsPopupFirstSeen.Has(hwnd)
+            _fsPopupFirstSeen[hwnd] := A_TickCount
+
+        safeToClose := _FSMainWindowPresent(hwnd)
+        if (!safeToClose
+         && (A_TickCount - _fsPopupFirstSeen[hwnd]) >= CFG.fsPopupGraceMs)
+            safeToClose := true
+
+        ; The _fsMainEverOpened precondition that used to sit on that second
+        ; branch is GONE. It was meant as extra caution and acted as a third
+        ; way for the close to be blocked forever -- if the flag never got set,
+        ; a popup that appeared while Main was closed could never be closed at
+        ; all, which is precisely the recurring complaint.
+        ;
+        ; Nothing is lost by removing it. The protection that matters is
+        ; _fsMainCandidate, checked at the top of this function: an HWND that
+        ; has ever carried the Main or Loading title can never be closed here,
+        ; whatever it is titled now and whatever any flag says. That is a
+        ; property of the window itself rather than of a flag somebody has to
+        ; remember to set.
+
+        if !safeToClose {
+            ; ── INVISIBLE IS NOT ENOUGH. GET IT OUT OF THE WAY. ─────────────
+            ; A DWM-cloaked window is not drawn, but it is still THERE: it
+            ; still hit-tests, so it still swallows every mouse click that
+            ; lands on it. A popup left cloaked in the middle of the screen
+            ; over Hearthstone is an invisible sheet of glass over the board --
+            ; the user clicks the game and nothing happens, with nothing on
+            ; screen to explain why.
+            ;
+            ; So it is also moved off the virtual desktop. Deliberately a bare
+            ; SetWindowPos rather than _FSParkWindow: parking RECORDS the
+            ; window so it can be restored, and this window must never be
+            ; restored -- it is waiting to be closed. No ledger entry, nothing
+            ; to bring it back, and no clicks intercepted while it waits.
+            try {
+                vx := SysGet(76), vy := SysGet(77)
+                vw := SysGet(78), vh := SysGet(79)
+                DllCall("user32\SetWindowPos", "Ptr", hwnd, "Ptr", 0
+                    , "Int", vx + vw + 2000, "Int", vy + vh + 2000
+                    , "Int", 0, "Int", 0
+                    , "UInt", 0x0001 | 0x0004 | 0x0010)  ; NOSIZE|NOZORDER|NOACTIVATE
+            }
+            _FSLog("FS-POPUP cloaked and moved off-screen, not yet closed,"
+                 . " hwnd=" . hwnd . " at " . why . " -- cannot yet prove it is"
+                 . " not Firestone Main. It is invisible AND cannot intercept"
+                 . " clicks; it will be closed the moment it can be told apart.")
+            return false
+        }
+
+        _fsPopupKilled[hwnd] := A_TickCount
+        _CloseWindowAsync(hwnd)
+        w := 0, h := 0
+        try WinGetPos(, , &w, &h, "ahk_id " . hwnd)
+        _FSLog("FS-POPUP killed at " . why . " hwnd=" . hwnd
+             . " size=" . w . "x" . h . " -- cloaked and closed on sight")
+        return true
+    }
+    return false
+}
+
 IsFirestoneNotificationPopup(hwnd, title) {
     if (title != "Firestone")
         return false
@@ -3160,36 +4438,60 @@ IsFirestoneNotificationPopup(hwnd, title) {
     try exStyle := WinGetExStyle("ahk_id " . hwnd)
     if (exStyle & 0x20)   ; WS_EX_TRANSPARENT — click‑through overlay, never close
         return false
+    ; NO WS_EX_TOPMOST EXCLUSION HERE -- and this comment exists so it is not
+    ; added back.
+    ;
+    ; It was, on the theory that Overwolf draws its in-game surfaces topmost so
+    ; a pinned comp panel would be excluded by that bit. The theory was wrong in
+    ; the way that mattered: the "Your abilities are ready!" notification is
+    ; topmost too, so the exclusion did not protect pins, it simply stopped this
+    ; function ever identifying anything, and the popup the closer exists to
+    ; remove was never removed. It sat on screen being cloaked and un-cloaked by
+    ; the F3 lock instead of being closed.
+    ;
+    ; Pins are protected by the mechanism that was actually broken -- see
+    ; UncloakWindow's _MapDrop note, where an exception was aborting the overlay
+    ; topmost enforcer on nearly every tick. If a pinned panel is ever closed
+    ; anyway, the FS-POPUP log line below names the exact window and size, which
+    ; is the evidence needed to write a discriminator that is not a guess.
     return true
 }
 
-; Per‑hwnd tick of the FIRST time the window matched the popup shape while
-; titled exactly "Firestone". A window is only ever closed after it has held
-; that match continuously for _fsNotifStableMs.
+;  Per-hwnd tick of the first time a window matched the popup shape while
+;  titled exactly "Firestone". Retained as evidence that the window's size has
+;  settled, and for the log; it no longer gates whether the window is closed.
 global _fsNotifFirstMatch := Map()
-; Was 10000. Ten seconds of a nag popup on screen is the thing being
-; complained about, and the long timer was only ever a proxy for "make sure
-; this isn't a Firestone - Main still forming". That question is now answered
-; directly and permanently by _fsMainCandidate (guard 3), which cannot be
-; fooled by timing, so the stability window only has to be long enough to
-; confirm the title and size have settled.
-global _fsNotifStableMs   := 1200
 global _fsDeferredPopupCloak := Map()   ; hwnd -> tick handed over by the
-                                        ; blanket's stop‑release
+                                        ; blanket's stop-release
 
-; Closes any lingering Firestone notification popup(s). SIX stacked guards
-; make it structurally impossible to take down a forming Firestone - Main:
-;   1. Inert during the entire launch pipeline.
-;   2. STRUCTURAL: a bare‑"Firestone" window may only be closed while a
-;      window titled exactly "Firestone - Main" is SIMULTANEOUSLY present.
-;   3. ABSOLUTE: never close a DWM‑cloaked window.
-;   3b. ABSOLUTE: never close a window ever flagged by the pre‑title alpha
-;      shield (>=600x400 formation profile).
-;   4. Never close a minimized window.
-;   5. Title AND SIZE stability: the bare‑"Firestone" match, at an unchanged
-;      window size, must persist for _fsNotifStableMs (10s).
+; BACKSTOP sweep for the Firestone notification popup.
+;
+; The popup is normally dead before this ever sees it: the NAMECHANGE handler
+; in the window event hook kills it within milliseconds of it being titled, and
+; the suppression funnel kills any that reaches it. This sweep exists for the
+; cases an event cannot cover -- a popup that already existed when the script
+; started, or one created while the hook was being re-armed.
+;
+; The guards that remain are the ones that protect Firestone's REAL windows,
+; and they are structural rather than timing-based:
+;   * ABSOLUTE: an HWND that has ever carried the "Firestone - Main" or
+;     "Firestone - Loading" title is never closed, whatever it is titled now
+;     (_fsMainCandidate). This is the guarantee; everything else is secondary.
+;   * ABSOLUTE: never close a window flagged by the pre-title alpha shield
+;     (the >=600x400 formation profile of a Main still being built).
+;   * Never close a minimized window.
+;
+; The old ten-second, then 1.2-second, "hold the match before acting" timer is
+; gone. It was a proxy for the identity question above, which is now answered
+; directly and cannot be fooled by timing -- and every millisecond it bought in
+; safety was a millisecond of nag popup on screen, which is the complaint.
+_HSIsForeground() {
+    try return WinActive("ahk_exe Hearthstone.exe") != 0
+    return false
+}
+
 CloseFirestoneNotificationPopups() {
-    global _EarlyOWCloakActive, State, _fsNotifFirstMatch, _fsNotifStableMs
+    global _EarlyOWCloakActive, State, _fsNotifFirstMatch
     global _fsDeferredPopupCloak, _fsAlphaApplied, _fsMainCandidate
 
     ; guard 1 -- kept for the early pre-title blanket, where windows genuinely
@@ -3197,15 +4499,16 @@ CloseFirestoneNotificationPopups() {
     if _EarlyOWCloakActive
         return
 
-    ; guard 1b -- inert while the lock is off.
+    ; GUARD 1b REMOVED: the popup closer now runs regardless of F3 lock state.
+    ; The popup must be terminated on creation, not toggled by F3.
+
+    ; NO "STAND DOWN DURING A MATCH" GUARD HERE, deliberately.
     ;
-    ; The bare-"Firestone" popup match is title plus size, and Firestone's own
-    ; windows can satisfy both. While the lock is off the user has deliberately
-    ; asked to see those windows and is looking at them, so closing anything at
-    ; that moment cannot be correct. A genuine notification is still closed on the
-    ; next tick after the lock goes back on.
-    if !State.fsMainLocked
-        return
+    ; One was added, suppressing the close whenever the overlay was visible and
+    ; Hearthstone had the foreground. That is the state a Battlegrounds player
+    ; is in for essentially the whole session -- and it is also exactly when the
+    ; "Your abilities are ready!" notification appears. The guard therefore
+    ; disabled the closer at the only time it was ever needed.
 
     prev     := A_DetectHiddenWindows
     prevMode := A_TitleMatchMode
@@ -3257,16 +4560,19 @@ CloseFirestoneNotificationPopups() {
                         _fsNotifFirstMatch[h] := {t: A_TickCount, w: wNow, h: hNow}
                         continue
                     }
-                    if (A_TickCount - _fsNotifFirstMatch[h].t < _fsNotifStableMs)
-                        continue                            ; guard 5
-
-                    _w2 := 0, _h2 := 0
-                    try WinGetPos(, , &_w2, &_h2, "ahk_id " . h)
-                    _FSLog("FS-POPUP closing bare-Firestone window hwnd=" . h
-                         . " size=" . _w2 . "x" . _h2
-                         . " -- if a window you wanted vanished about now,"
-                         . " this line is why")
-                    try WinClose("ahk_id " . h)             ; WM_CLOSE
+                    ; NO STABILITY WAIT. This sweep is now a BACKSTOP: the
+                    ; popup is normally killed by the NAMECHANGE handler within
+                    ; milliseconds of being titled, and only reaches here if
+                    ; that event was missed -- a hook that was not armed yet, a
+                    ; window that existed before the script started. Having
+                    ; identified it, waiting a further settling period before
+                    ; acting would only extend the time it is on screen, which
+                    ; is the entire complaint.
+                    ;
+                    ; The stability ledger is still maintained above, because it
+                    ; is what proves the window's size settled -- but it no
+                    ; longer gates the kill.
+                    _FSKillNotificationPopup(h, "sweeper backstop")
                 } catch {
                 }
             }
@@ -3317,9 +4623,9 @@ CloseFirestoneNotificationPopups() {
 ; CLOSE rather than hide. The sweeper runs on a gentle cadence for 90s.
 global _fsNotifSweepUntil := 0
 
-StartFSNotifSweeper(durationMs := 90000) {
+StartFSNotifSweeper() {
     global _fsNotifSweepUntil, _fsNotifFirstMatch
-    _fsNotifSweepUntil := A_TickCount + durationMs
+    _fsNotifSweepUntil := 0   ; no expiry – runs forever
     _fsNotifFirstMatch := Map()
     SetTimer(FSNotifSweepTick, 750)
     CloseFirestoneNotificationPopups()   ; immediate pass
@@ -3333,24 +4639,8 @@ StopFSNotifSweeper() {
 }
 
 FSNotifSweepTick() {
-    global _fsNotifSweepUntil, State
-    if (A_TickCount >= _fsNotifSweepUntil) {
-        ; EXPIRY NO LONGER MEANS STOP WHILE THE LOCK IS ON.
-        ; The sweeper used to run for 90 seconds after a launch and then shut
-        ; down for good. But the "Your abilities are ready!" popup is not a
-        ; launch artefact -- Firestone raises it whenever it likes, typically
-        ; minutes later when Hearthstone reaches the main menu, long after the
-        ; window had closed. So the deferred set is released on schedule (that
-        ; part is launch-scoped and must not linger), and then the sweep simply
-        ; keeps running at its gentle 750 ms cadence for as long as the F3 lock
-        ; is on. It is a title-and-size match over two processes; it costs
-        ; nothing at that rate.
-        _ReleaseDeferredPopupCloaks()
-        if !State.fsMainLocked {
-            SetTimer(FSNotifSweepTick, 0)
-            return
-        }
-    }
+    ; The sweeper runs indefinitely at a gentle cadence, closing the
+    ; notification popup whenever it appears. It is not tied to F3 lock state.
     CloseFirestoneNotificationPopups()
 }
 
@@ -3402,7 +4692,7 @@ _ReleaseDeferredPopupCloaks() {
                     closable := true
             }
             if closable {
-                try WinClose("ahk_id " . h)
+                try _CloseWindowAsync(h)
                 continue
             }
 
@@ -3588,9 +4878,23 @@ SuppressFirestoneMainTick() {
                     _fsHiddenByUs[bhwnd] := true      ; ours: stays hidden
                     _LogFSSurface(bhwnd, btitle, "kept-hidden")
                 } else {
-                    _LogFSSurface(bhwnd, btitle, "revealed")
+                    ; RELEASE, BUT ONLY SHOW WHAT WE HID.
+                    ;
+                    ; Releasing our own concealment (unpark, uncloak) is always
+                    ; correct -- it undoes something this script did. Calling
+                    ; ShowWindow is not: a window can be invisible because
+                    ; OVERWOLF wants it invisible, and forcing it on screen puts
+                    ; a blank internal frame on the user's desktop.
+                    ;
+                    ; The ledger is the difference. _fsHiddenByUs records the
+                    ; windows this script took off the screen, and those are the
+                    ; only ones it has any business putting back.
+                    _LogFSSurface(bhwnd, btitle, "released")
                     _FSReleaseSurface(bhwnd)    ; unpark, then uncloak
-                    DllCall("ShowWindow", "Ptr", bhwnd, "Int", 8)   ; SW_SHOWNA
+                    if _fsHiddenByUs.Has(bhwnd) {
+                        _FSShowIfNotPopup(bhwnd)
+                        _MapDrop(_fsHiddenByUs, bhwnd)
+                    }
                 }
             }
         }
@@ -3782,12 +5086,23 @@ StopEarlyOverwolfCloak(*) {
                     if FSShouldSuppress(title)
                         continue
 
-                    ; DEFERRED POPUP RELEASE: if a window is a popup‑shaped
-                    ; bare‑"Firestone" and the notification sweeper is alive,
-                    ; hand it over.
-                    if (IsFirestoneNotificationPopup(h, title)
-                     && _fsNotifSweepUntil > A_TickCount) {
+                    ; A NOTIFICATION POPUP IS KILLED HERE, NEVER RELEASED.
+                    ;
+                    ; This used to hand the popup to the notification sweeper if
+                    ; the sweeper was alive, and otherwise fall through to
+                    ; _FSReleaseSurface -- which UNCLOAKS it. That fall-through
+                    ; is how F3 painted the popup: the unlock path stopped the
+                    ; sweeper one line earlier, so "is the sweeper alive" was
+                    ; false and the release ran.
+                    ;
+                    ; There is no version of this where showing a notification
+                    ; is the right outcome, so the sweeper's state no longer has
+                    ; a vote. _FSKillNotificationPopup keeps it cloaked and
+                    ; closes it, and its own guards still make closing Firestone
+                    ; Main impossible.
+                    if IsFirestoneNotificationPopup(h, title) {
                         _fsDeferredPopupCloak[h] := A_TickCount
+                        _FSKillNotificationPopup(h, "early-cloak stop")
                         continue
                     }
 
@@ -3878,14 +5193,18 @@ EarlyOverwolfCloakTick() {
 }
 
 ; ──────────────────────────────────────────────────────────────────────────────
-; HS pre‑launch cloaker (+ Battle.net/Agent launch blanket)
+; Battle.net / Agent launch blanket
 ; ──────────────────────────────────────────────────────────────────────────────
-; Runs from F2 press through RevealHSAfterLaunch. Cloaks every Hearthstone.exe
-; window via DWM the instant it appears. While _bnetCloakActive is ALSO true
-; (armed by StartHSCloaker, cleared only by RevealBNetWindows / StopHSCloaker)
-; the same tick blankets every Battle.net.exe / Agent.exe window. The flags
-; are separate because Battle.net must be revealable EARLY (login screen)
-; while HS itself stays cloaked until RevealHSAfterLaunch.
+; Runs from the F2 press through RevealHSAfterLaunch. It no longer touches
+; Hearthstone at all -- the game is never concealed; see the note at the top of
+; HSHiddenLaunchWatch for why that was removed. What remains is the Battle.net
+; side: while _bnetCloakActive is true (armed by StartHSCloaker, cleared by
+; StopHSCloaker) each tick blankets every Battle.net.exe / Agent.exe SERVICE
+; window, which genuinely does need a 10ms cadence to catch them at birth.
+;
+; The two flags survive as a pair because the timer's lifetime is still tied to
+; the launch, and because Battle.net must be revealable EARLY (login screen)
+; independently of when the launch finishes.
 global _HSCloakActive   := false
 global _bnetCloakActive := false   ; true = HSCloakTick also blankets BNet/Agent
 global _HSCloakerHasRef := false
@@ -3950,14 +5269,13 @@ HSCloakTick() {
     prev := A_DetectHiddenWindows
     DetectHiddenWindows true
     try {
-        ; Cloak Hearthstone
-        for hwnd in WinGetList("ahk_exe Hearthstone.exe") {
-            try {
-                if IsIMEWindow(hwnd)
-                    continue
-                CloakWindow(hwnd)
-            }
-        }
+        ; HEARTHSTONE IS NOT TOUCHED HERE ANY MORE.
+        ; This tick used to cloak every Hearthstone window the instant it
+        ; appeared. That is gone -- the game shows itself, on the user's own
+        ; fullscreen and monitor settings. The timer survives because it also
+        ; owns the Battle.net services blanket below, which is a separate job
+        ; that genuinely does need a 10ms cadence during the launch.
+        ;
         ; Battle.net SERVICES blanket -- active for the whole launch (until
         ; StopHSCloaker), maximum aggression: cloak+hide everything in the
         ; family except the REAL client window. The auto-login shell, splash,
@@ -4098,55 +5416,28 @@ HSPlacementGuardTick() {
                     }
                     if !_MoveBudgetAllows(hwnd)
                         continue
-                    MonitorGetWorkArea(ChosenMonIdx, &waL, &waT, &waR, &waB)
-                    waW := waR - waL
-                    waH := waB - waT
-                    newX := (w <= waW) ? waL + (waW - w) // 2 : waL
-                    newY := (h <= waH) ? waT + (waH - h) // 2 : waT
-                    if (x != newX || y != newY) {
-                        _MoveBudgetNote(hwnd)
-                        ; Cloak the window before moving it, so the correction
-                        ; is invisible and there is no flicker to the primary
-                        ; monitor. We then uncloak immediately after the move.
-                        ; This eliminates the visible snap‑back that occasionally
-                        ; occurred when Unity’s display‑mode setup restored the
-                        ; window to the primary monitor after we had already
-                        ; uncloaked it.
-                        global _cloakState
-                        wasCloaked := _cloakState.Has(hwnd)
-                        if !wasCloaked
-                            CloakWindow(hwnd)
-                        WinMove(newX, newY, , , "ahk_id " . hwnd)
-                        if !wasCloaked {
-                            Sleep(15)   ; let the move settle
-                            UncloakWindow(hwnd)
-                        }
-                    }
+                    ; NO CLOAK AROUND THE MOVE.
+                    ; This used to cloak, move, sleep 15ms and uncloak, to hide
+                    ; the correction. Two problems. The cloak/uncloak pair is
+                    ; itself a display-mode event for a borderless DXGI window,
+                    ; so it provoked the churn it was hiding; and the
+                    ; MonitorGetWorkArea between the two THROWS on a stale
+                    ; monitor index -- the catch below swallowed it, and the
+                    ; window was left cloaked with no path back. On a machine
+                    ; whose monitor count changed, that is a permanently
+                    ; invisible game. A bare move cannot strand anything.
+                    _MoveBudgetNote(hwnd)
+                    _PlaceHSOnChosenMonitor(hwnd)
                     continue
                 }
 
-                ; ---- Unreleased windows: cloak → place → uncloak ───────────
-                CloakWindow(hwnd)
-
+                ; ---- Unreleased windows: place, and mark released ----------
                 if (WinGetTitle("ahk_id " . hwnd) != "Hearthstone")
                     continue
                 if (WinGetMinMax("ahk_id " . hwnd) = -1)
                     continue
-                WinGetPos(&x, &y, &w, &h, "ahk_id " . hwnd)
-                if (w < 600 || h < 400)
-                    continue
-
-                monIdx := (CFG.lockWindowsToChosenMonitor && ChosenMonIdx)
-                    ? ChosenMonIdx
-                    : GetMonitorIndexForPoint(x + w // 2, y + h // 2)
-                MonitorGetWorkArea(monIdx, &waL, &waT, &waR, &waB)
-                waW := waR - waL
-                waH := waB - waT
-                newX := (w <= waW) ? waL + (waW - w) // 2 : waL
-                newY := (h <= waH) ? waT + (waH - h) // 2 : waT
-                if (x != newX || y != newY)
-                    WinMove(newX, newY, , , "ahk_id " . hwnd)
-                UncloakWindow(hwnd)
+                UncloakWindow(hwnd)      ; repair only (see RevealHSAfterLaunch)
+                _PlaceHSOnChosenMonitor(hwnd)
                 _hsRevealed[hwnd] := true
             } catch {
             }
@@ -4226,7 +5517,17 @@ UncloakWindow(hwnd, force := false) {
     static DWMWA_DISALLOW_PEEK      := 11
     if (!force && !_cloakState.Has(hwnd))  ; not cloaked by us: no DWM churn
         return
-    _cloakState.Delete(hwnd)
+    ; Map.Delete THROWS on a key that is not there, and the force path reaches
+    ; this line precisely when the key is usually absent -- force exists to
+    ; uncloak a window we have no ledger entry for. The throw propagated into
+    ; whatever called us, and the biggest victim was OverlayTopmostTick: it
+    ; calls _FSReleaseSurface (force uncloak) on the in-game overlay every two
+    ; seconds, BEFORE re-asserting the overlay's topmost flag. The exception
+    ; aborted the rest of that window's body every single tick, so the topmost
+    ; re-assert -- the enforcer's entire job -- almost never ran. An overlay
+    ; that loses its z-order and is never put back is an overlay whose pinned
+    ; panels appear and disappear at random.
+    _MapDrop(_cloakState, hwnd)
     v := 0
     try DllCall("dwmapi\DwmSetWindowAttribute", "Ptr", hwnd, "UInt", DWMWA_CLOAK,              "Int*", v, "UInt", 4)
     try DllCall("dwmapi\DwmSetWindowAttribute", "Ptr", hwnd, "UInt", DWMWA_EXCLUDED_FROM_PEEK, "Int*", v, "UInt", 4)
@@ -4396,35 +5697,24 @@ _FSMayPark(hwnd, title) {
      || title = "Firestone - Battlegrounds" || title = "Firestone")
         return true
 
-    ; ---- PRE-SHOW ALLOWANCE: this is the fix for the Loading flash ---------
-    ; A DWM cloak is applied by the compositor on its NEXT frame, so between
-    ; the cloak call and the cloak taking effect there is up to one frame --
-    ; about 16 ms at 60 Hz -- in which a window that gets shown is drawn.
-    ; That is exactly the "there for a millisecond on some F2 tries, fully
-    ; hidden on others" inconsistency: it is a race with the refresh, so it
-    ; resolves differently every launch.
+    ; ── NOTHING UNNAMED IS EVER PARKED. ────────────────────────────────────
+    ; There used to be a "pre-show allowance" here: any not-yet-visible Overwolf
+    ; window of reasonable size could be parked off the virtual desktop before
+    ; it was ever shown, on the theory that a synchronous move beats a DWM cloak
+    ; by up to one frame.
     ;
-    ; A move is not a compositor request, it is synchronous. So if the window
-    ; is moved off the virtual desktop BEFORE it is ever shown, there is no
-    ; frame in which it can appear anywhere -- not a fast one, not a slow one.
-    ; No latency, no race, nothing to lose.
+    ; OVERWOLF IS A PLATFORM, NOT AN APP. It hosts League overlays, TFT
+    ; overlays, and whatever else the user has installed, all inside the same
+    ; two executables this script enumerates. An untitled newborn is therefore
+    ; as likely to belong to somebody else's app as to Firestone -- and parking
+    ; RECORDS the window in _fsParked, which F3's unlock sweep restores and
+    ; shows. That is exactly how pressing F3 opened a TFT app: the script had
+    ; parked a window it could not name, then dutifully handed it back.
     ;
-    ; Safe because the park remembers the exact rectangle and the unpark
-    ; restores it, so a window that turns out to be the in-game overlay is put
-    ; back precisely where Overwolf placed it. Game-screen-sized windows are
-    ; excluded anyway as a second line of defence for the overlay, and
-    ; click-through windows were excluded above.
-    if !DllCall("user32\IsWindowVisible", "Ptr", hwnd) {
-        try {
-            rc := Buffer(16, 0)
-            if DllCall("user32\GetWindowRect", "Ptr", hwnd, "Ptr", rc) {
-                w := NumGet(rc, 8, "Int") - NumGet(rc, 0, "Int")
-                h := NumGet(rc, 12, "Int") - NumGet(rc, 4, "Int")
-                if (w <= 1600 && h <= 1000)
-                    return true
-            }
-        }
-    }
+    ; A cloak has no ledger and no restore, so an unnamed newborn is cloaked
+    ; instead (see _FSSuppressSurface) and released as soon as its title shows
+    ; it belongs to somebody else. The theoretical one frame is worth far less
+    ; than reaching into another application's windows.
     return false
 }
 
@@ -4529,7 +5819,7 @@ _FSUnparkWindow(hwnd) {
             idx := (CFG.fsFollowMonitorLock && CFG.lockWindowsToChosenMonitor
                  && ChosenMonIdx)
                  ? ChosenMonIdx : MonitorGetPrimary()
-            MonitorGetWorkArea(idx, &waL, &waT, &waR, &waB)
+            _SafeWorkArea(idx, &waL, &waT, &waR, &waB)
             waW := waR - waL, waH := waB - waT
             nx := (w > 0 && w <= waW) ? waL + (waW - w) // 2 : waL
             ny := (h > 0 && h <= waH) ? waT + (waH - h) // 2 : waT
@@ -4639,7 +5929,7 @@ FSRepairStrandedWindows() {
                     }
                     _rIdx := (CFG.lockWindowsToChosenMonitor && ChosenMonIdx)
                            ? ChosenMonIdx : MonitorGetPrimary()
-                    MonitorGetWorkArea(_rIdx, &waL, &waT, &waR, &waB)
+                    _SafeWorkArea(_rIdx, &waL, &waT, &waR, &waB)
                     DllCall("user32\SetWindowPos", "Ptr", h, "Ptr", 0
                         , "Int", waL + 80, "Int", waT + 80, "Int", 0, "Int", 0
                         , "UInt", 0x0001 | 0x0004 | 0x0010)
@@ -5003,7 +6293,7 @@ _FSLogExemptOnce(hwnd, title) {
 ; would run on whatever thread it interrupted. The hook reads the already
 ; decided state; the settled sweep owns the measurement.
 _FSSuppressSurface(hwnd, title, allowProbe := false) {
-    global State, CFG, _fsMainCandidate
+    global State, CFG, _fsMainCandidate, _fsMainEverOpened
     if !State.fsMainLocked
         return
 
@@ -5020,6 +6310,15 @@ _FSSuppressSurface(hwnd, title, allowProbe := false) {
     ; be conditional on whether we go on to act.
     if (title = "Firestone - Loading" || title = "Firestone - Main")
         _fsMainCandidate[hwnd] := true
+
+    ; Latch "Main has existed this session" HERE, where Main is actually seen.
+    ;
+    ; It used to be set only inside FSMainHasOpened(), which is called only from
+    ; Hotkey_F3 -- so a user who never pressed F3 never set it, and every rule
+    ; depending on it was silently inert for the whole session. A fact about the
+    ; world belongs where the world is observed, not where somebody asks.
+    if IsFirestoneMainTitle(title)
+        _fsMainEverOpened := true
 
     ; HELPER-WINDOW EXEMPTION, NARROWED.
     ; IsHelperWindow returns true for anything OWNED by another window or
@@ -5042,17 +6341,72 @@ _FSSuppressSurface(hwnd, title, allowProbe := false) {
     ; in-game overlay ("Firestone - Overlays") does not match any of them and
     ; keeps its complete immunity. That is deliberate and load-bearing: the
     ; overlay is the one Firestone surface that must never be touched.
+    ; ── NOTIFICATION POPUP: CLOAK, NEVER PARK, AND KILL IT ──────────────────
+    ; Handled before everything below, and deliberately never parked.
+    ;
+    ; Parking moves a window off the virtual desktop and RECORDS ITS RECTANGLE
+    ; so it can be put back. That bookkeeping is what ties a window to F3: the
+    ; unlock sweep restores everything it finds parked. A popup that is going
+    ; to be closed must never enter that ledger, or F3 becomes a way to summon
+    ; a window whose whole purpose is to not exist. Cloaking has no such
+    ; bookkeeping -- it is a property of the window, cleared when the window
+    ; dies, which for this window is imminent.
+    if IsFirestoneNotificationPopup(hwnd, title) {
+        ; The kill is ASKED FOR, not assumed. _FSKillNotificationPopup applies
+        ; the structural guard and refuses when this window might be Firestone
+        ; Main -- and if it refuses, this window is not a popup after all, so
+        ; it must fall through to normal suppression rather than being cloaked
+        ; here and abandoned. Cloaking first and asking afterwards left a
+        ; declined window cloaked, outside the ledgers, and reachable only by
+        ; the reveal path.
+        if _FSKillNotificationPopup(hwnd, "funnel") {
+            _DisableDWMTransitions(hwnd)
+            return
+        }
+        ; Declined: treat it as the real Firestone window it may well be.
+    }
+
     if IsHelperWindow(hwnd) {
-        if !(IsFirestoneNotificationPopup(hwnd, title)
-          || IsFirestoneMainTitle(title)
+        ; AN UNNAMED NEWBORN IS CLOAKED, NOT WAVED THROUGH.
+        ;
+        ; This is the birth gap. The window event hook calls this funnel at
+        ; CREATE with an EMPTY title -- a CEF window has no caption yet -- and
+        ; every test below matches on a TITLE, so at CREATE none of them could
+        ; match and this branch returned having done nothing at all. By the
+        ; time the window had a name to recognise, it had already painted.
+        ;
+        ; Cloaking an unidentified newborn is the safe direction to be wrong
+        ; in. A cloak is reversible, costs nothing, and works on a window that
+        ; has never been shown; if it turns out to be the in-game overlay,
+        ; OverlayTopmostTick uncloaks it on its next pass -- the same contract
+        ; this hook already relies on for every non-helper Overwolf window.
+        ; Being invisible for one tick is recoverable. Being painted is not.
+        if (title = "") {
+            CloakWindow(hwnd)
+            _DisableDWMTransitions(hwnd)
+            return
+        }
+        if !(IsFirestoneMainTitle(title)
           || IsFirestoneBattlegroundsTitle(title)
-          || title = "Firestone - Loading") {
+          || title = "Firestone - Loading"
+          || title = "Firestone") {
             _FSLogExemptOnce(hwnd, title)
             return
         }
-        CloakWindow(hwnd)
-        _DisableDWMTransitions(hwnd)
-        return
+        ; A NAMED FIRESTONE SURFACE FALLS THROUGH to the normal policy below,
+        ; which MOVES it off the virtual desktop rather than only cloaking it.
+        ;
+        ; This branch used to stop here with a cloak and nothing else, on the
+        ; reasoning that a tool window's position is Overwolf's business. That
+        ; is true while the window is visible and false while we are concealing
+        ; it: a cloaked window is not drawn but is still HIT-TESTED, so one left
+        ; sitting over Hearthstone silently swallows every click that lands on
+        ; it. An invisible window in the middle of the screen is worse than a
+        ; visible one, because nothing on screen explains why the game stopped
+        ; responding.
+        ;
+        ; The park records the exact rectangle and the reveal restores it, so
+        ; the window still returns precisely where Overwolf put it.
     }
 
     warm := _FSIsWarm(hwnd)
@@ -5067,8 +6421,47 @@ _FSSuppressSurface(hwnd, title, allowProbe := false) {
 
 ; Reveal-side counterpart: undo everything the cold path did, in the order that
 ; keeps it invisible until the last step.
+; Show a Firestone window -- unless it is the notification popup, which is
+; killed instead.
+;
+; The companion to the guard inside _FSReleaseSurface. Release and show are the
+; two ways a concealed window gets back on screen, and both now refuse the one
+; window that must never return. Every ShowWindow on a Firestone surface goes
+; through here; the Battle.net paths have their own rules and are untouched.
+_FSShowIfNotPopup(hwnd) {
+    try {
+        t := WinGetTitle("ahk_id " . hwnd)
+        if IsFirestoneNotificationPopup(hwnd, t) {
+            _FSKillNotificationPopup(hwnd, "show attempt")
+            return false
+        }
+    }
+    try DllCall("ShowWindow", "Ptr", hwnd, "Int", 8)   ; SW_SHOWNA
+    return true
+}
+
 _FSReleaseSurface(hwnd) {
     global _fsParked
+
+    ; ── A NOTIFICATION POPUP IS NEVER RELEASED. IT IS KILLED. ───────────────
+    ; This is the single choke point for "make a Firestone window visible
+    ; again" -- the F3 reveal, the early-cloak teardown, the overlay enforcer
+    ; and the stranded-window repairs all end up here. Putting this rule at
+    ; each of those sites means getting it right five times and keeping it
+    ; right forever; putting it here means it cannot be got wrong at all.
+    ;
+    ; The popup reached the screen through this function twice already, via two
+    ; different callers, which is the definition of a rule that belongs one
+    ; level down. Firestone Main cannot match: this tests for the bare
+    ; "Firestone" title, and Main's is "Firestone - Main".
+    try {
+        t := WinGetTitle("ahk_id " . hwnd)
+        if IsFirestoneNotificationPopup(hwnd, t) {
+            _FSKillNotificationPopup(hwnd, "release attempt")
+            return
+        }
+    }
+
     _FSUnparkWindow(hwnd)             ; back on the chosen monitor, still cloaked
     _FSTabOn(hwnd)                    ; taskbar button back (no-op if never taken)
     ; Force the uncloak. The arbitration in UncloakWindow skips the DWM call when
@@ -5205,7 +6598,7 @@ _PlaceBlizzWindowNow(hwnd) {
             return
         if (GetMonitorIndexForPoint(bx + bw // 2, by + bh // 2) = ChosenMonIdx)
             return
-        MonitorGetWorkArea(ChosenMonIdx, &waL, &waT, &waR, &waB)
+        _SafeWorkArea(ChosenMonIdx, &waL, &waT, &waR, &waB)
         waW := waR - waL, waH := waB - waT
         if (waW <= 0 || waH <= 0)
             return
@@ -5818,7 +7211,7 @@ _BNetDropTopmost(hwnd := 0) {
 
 RevealBNetForRender() {
     global _bnetRevealedAt, _bnetLauncherStaged, ChosenMonIdx, _bnetLauncherHwnd
-    global _bnetHiddenByUs, _bnetHideDone
+    global _bnetHiddenByUs, _bnetHideDone, CFG
     ; Since the launcher is never hidden, this function now only positions
     ; the real client window on the chosen monitor (if not already there).
     ; The un‑hide / rescue sweep is removed because it is no longer needed.
@@ -5865,7 +7258,7 @@ RevealBNetForRender() {
                             bh := NumGet(rc, 12, "Int") - by
                             ; Only move if not already on chosen monitor
                             if (GetMonitorIndexForPoint(bx + bw // 2, by + bh // 2) != ChosenMonIdx) {
-                                MonitorGetWorkArea(ChosenMonIdx, &rL, &rT, &rR, &rB)
+                                _SafeWorkArea(ChosenMonIdx, &rL, &rT, &rR, &rB)
                                 rW := rR - rL, rH := rB - rT
                                 if (bw < 200 || bw > rW)
                                     bw := Min(rW, 1200)
@@ -5894,14 +7287,61 @@ RevealBNetForRender() {
                 ; nothing may hide it again (see _HideBlizzWindow).
                 _bnetLauncherHwnd := hwnd
 
-                ; And put it in front. Last, so the pin lands on a window that
-                ; is already un-hidden and already on the chosen monitor --
-                ; pinning first would raise a window that is about to move.
-                _BNetPinForeground(hwnd)
+                ; Last step, and it depends on the mode.
+                ;
+                ; "visible": put it in front. Done last so the pin lands on a
+                ; window that is already un-hidden and already on the chosen
+                ; monitor -- pinning first would raise a window about to move.
+                ;
+                ; "minimized": put it away instead, animation-free and without
+                ; activation, before it has drawn a frame anyone will see. The
+                ; launch command does not care whether the client is visible,
+                ; so nothing else in the sequence changes.
+                if (CFG.bnetLauncherMode = "minimized") {
+                    _MinimizeWindowNoAnim(hwnd)
+                    _FSLog("BNET-SEQ launcher mode=minimized -- tucked away"
+                         . " without being shown")
+                } else {
+                    _BNetPinForeground(hwnd)
+                }
             }
         }
     }
     DetectHiddenWindows prev
+}
+
+; Has the launcher finished arriving, as opposed to merely existing?
+;
+; Deliberately shape-based rather than timed. "Visible, not minimised, and
+; bigger than the placeholder rect a CEF window starts with" is evidence; a
+; stopwatch is a guess, and it is wrong on exactly the machines that most need
+; it to be right.
+_BNetLauncherLooksReady() {
+    prev  := A_DetectHiddenWindows
+    DetectHiddenWindows true
+    ready := false
+    try {
+        for hwnd in WinGetList("ahk_exe Battle.net.exe") {
+            try {
+                if _IsBlizzInfrastructureWindow(hwnd)
+                    continue
+                if !_IsProtectedBNetMain(hwnd)
+                    continue
+                if !DllCall("user32\IsWindowVisible", "Ptr", hwnd)
+                    continue
+                if (WinGetMinMax("ahk_id " . hwnd) = -1)
+                    continue
+                w := 0, h := 0
+                WinGetPos(, , &w, &h, "ahk_id " . hwnd)
+                if (w >= 700 && h >= 400) {
+                    ready := true
+                    break
+                }
+            }
+        }
+    }
+    DetectHiddenWindows prev
+    return ready
 }
 
 ; Public entry (unchanged signature). See the lifecycle note above.
@@ -5992,13 +7432,34 @@ UnhideBNetLoginWindows() {
 ;
 ; Other code may request a minimise -- the request is idempotent -- but
 ; nothing else sets the timing.
-global _bnetHSSeenAt   := 0    ; tick Hearthstone's process was first seen
+; The Play command's timestamp, kept SEPARATE from _bnetLaunchFiredAt.
+;
+; Both are stamped at the same instant, but _bnetLaunchFiredAt is cleared by
+; CancelLaunchTimers -- which runs on six paths including the SUCCESS ones --
+; and the minimize and the stall watch both measure from this moment. Reusing a
+; value someone else resets would make the launcher's exit depend on which
+; teardown happened to run first. This one belongs to the minimize sequence and
+; nothing else writes it.
+global _bnetPlayFiredAt := 0
+
+; The moment the launcher became USABLE, as opposed to merely existing.
+;
+; Every visible interval in the sequence is measured from here, which is what
+; makes the sequence take the same time on a cold start as on a warm one. Reset
+; per launch by StartBNetMinimizeSequence.
+global _bnetReadyAt := 0
                                ; AFTER the launcher became visible
 global _bnetMinSeqUntil := 0   ; ceiling for the sequence (0 = not running)
 
 StartBNetMinimizeSequence() {
-    global _bnetHSSeenAt, _bnetMinSeqUntil, CFG
-    _bnetHSSeenAt   := 0
+    global _bnetMinSeqUntil, _bnetPlayFiredAt, _bnetReadyAt, CFG
+    ; Clear the anchor for THIS sequence. The predecessor this replaced was
+    ; reset here; without the same reset, a second F2 in one session starts a
+    ; sequence still holding the PREVIOUS launch's timestamp -- already older
+    ; than the linger -- and the tick would minimize a launcher that has not
+    ; pressed Play yet. Stage 3 of TryLaunchWTCG re-stamps it for real.
+    _bnetPlayFiredAt := 0
+    _bnetReadyAt     := 0
     _bnetMinSeqUntil := A_TickCount + CFG.bnetMinimizeCeilingMs
     SetTimer(BNetMinimizeSequenceTick, 200)
 }
@@ -6010,42 +7471,254 @@ StopBNetMinimizeSequence() {
 }
 
 BNetMinimizeSequenceTick() {
-    global CFG, _bnetRevealedAt, _bnetPostMinDone, _bnetHSSeenAt, _bnetMinSeqUntil
+    global CFG, _bnetRevealedAt, _bnetPostMinDone, _bnetPlayFiredAt, _bnetMinSeqUntil
+    global _bnetReadyAt
 
     if (_bnetPostMinDone || !_bnetRevealedAt || !_bnetMinSeqUntil) {
         StopBNetMinimizeSequence()
         return
     }
-    ; The launcher must actually have been looked at before it goes away.
-    if (A_TickCount - _bnetRevealedAt < CFG.bnetRevealDwellMs)
+    ; The launcher must actually have been looked at before it goes away --
+    ; unless it was never shown, in which case there is nothing to look at and
+    ; the floor is zero. That is the whole difference the "minimized" mode
+    ; makes to this timer.
+    ; Same anchor as the scheduled minimize, so the backstop can never
+    ; disagree with it about when the launcher is due to go.
+    dwell := (CFG.bnetLauncherMode = "minimized") ? 0 : CFG.bnetRevealDwellMs
+    if (_bnetReadyAt && (A_TickCount - _bnetReadyAt) < dwell)
         return
 
-    ; Ceiling: Hearthstone never showed up (failed launch, maintenance, a login
-    ; the detector missed). Minimize anyway rather than leaving the launcher
-    ; sitting on screen forever, and say so.
+    ; Ceiling: the launch command never fired at all. Minimize anyway rather
+    ; than leaving the launcher sitting on screen forever, and say so.
     if (A_TickCount >= _bnetMinSeqUntil) {
         _FSLog("BNET-SEQ ceiling reached after "
-             . (A_TickCount - _bnetRevealedAt) . "ms with no Hearthstone process"
-             . " -- minimizing the launcher anyway")
+             . (A_TickCount - _bnetRevealedAt) . "ms -- minimizing the launcher"
+             . " anyway")
         _BNetSequenceMinimizeNow()
         return
     }
 
-    ; THE ANCHOR: Hearthstone has launched.
-    if !GetHSPID() {
-        _bnetHSSeenAt := 0
+    ; ══════════════════════════════════════════════════════════════════════
+    ; THE ANCHOR IS THE PLAY COMMAND, NOT HEARTHSTONE'S PROCESS
+    ; ══════════════════════════════════════════════════════════════════════
+    ; This used to wait for Hearthstone to exist and then linger. That put the
+    ; launcher on screen for the whole of Hearthstone's start-up, and produced
+    ; the sequence the user did not want: launcher, then game, then the
+    ; launcher tidying itself away over the top of the game.
+    ;
+    ; Anchoring on the launch command instead means the launcher is already
+    ; gone by the time the game's window appears, so the game arrives to an
+    ; empty screen and takes the foreground uncontested. The launcher's job
+    ; ended when it fired the command; nothing about the minimize needs to know
+    ; whether the game has started yet.
+    ;
+    ; What the game's absence DOES matter for is a stalled launch -- a pending
+    ; update or a sign-in. That is a separate question with its own owner, the
+    ; stall watch armed after the minimize. See BNetStallWatchTick.
+    if !_bnetPlayFiredAt
         return
-    }
-    if !_bnetHSSeenAt {
-        _bnetHSSeenAt := A_TickCount
-        _FSLog("BNET-SEQ Hearthstone launched -- launcher lingers "
-             . CFG.bnetPostPlayLingerMs . "ms then minimizes")
-        return
-    }
-    if (A_TickCount - _bnetHSSeenAt < CFG.bnetPostPlayLingerMs)
+    if (A_TickCount - _bnetPlayFiredAt < CFG.bnetPostPlayLingerMs)
         return
 
+    _FSLog("BNET-SEQ Play fired " . (A_TickCount - _bnetPlayFiredAt)
+         . "ms ago -- minimizing the launcher now, ahead of the game window")
     _BNetSequenceMinimizeNow()
+}
+
+; ══════════════════════════════════════════════════════════════════════════════
+;  F1 GUARD — keep the launcher down while the connection is blocked
+; ══════════════════════════════════════════════════════════════════════════════
+; Scoping the firewall rule to Hearthstone.exe (see _HSProgramScope) removes the
+; CAUSE of the launcher surfacing during F1. This is the second line: Battle.net
+; restores itself for its own reasons too -- a finished background download, a
+; friend request, a notification -- and mid-combat is the worst possible moment
+; for a window to appear over the game.
+;
+; Two hard rules, so this can never become the thing that fights the user:
+;   * It only ever re-minimizes a launcher THIS SCRIPT already minimized
+;     (_bnetPostMinDone). A launcher the user opened themselves is not ours.
+;   * It stands down completely while the stall watch has deliberately put the
+;     launcher on screen for an update or a sign-in.
+; And it minimizes WITHOUT animation or activation, because F1 runs while the
+; user is in combat: no shrink-to-taskbar animation, no focus change.
+global _f1BNetGuardUntil := 0
+global _f1BNetWasMinimized := Map()   ; hwnd -> was minimized when F1 started
+
+; Snapshot which launcher windows are minimized RIGHT NOW, then watch only
+; those. _bnetPostMinDone alone was too coarse a test: it stays true for the
+; rest of the session after the first launch, so the guard would also
+; re-minimize a launcher the user had opened themselves and was reading during
+; the F1 window. Restoring a window this script minimized is what we undo;
+; a window the user chose to have open is theirs.
+StartF1BNetGuard(durationMs) {
+    global _f1BNetGuardUntil, _f1BNetWasMinimized
+    _f1BNetWasMinimized := Map()
+    prev := A_DetectHiddenWindows
+    DetectHiddenWindows true
+    try {
+        for hwnd in WinGetList("ahk_exe Battle.net.exe") {
+            try {
+                if _IsBlizzInfrastructureWindow(hwnd)
+                    continue
+                if !_IsProtectedBNetMain(hwnd)
+                    continue
+                if (WinGetMinMax("ahk_id " . hwnd) = -1)
+                    _f1BNetWasMinimized[hwnd] := true
+            }
+        }
+    }
+    DetectHiddenWindows prev
+
+    if !_f1BNetWasMinimized.Count
+        return                    ; nothing was tucked away: nothing to protect
+    _f1BNetGuardUntil := A_TickCount + durationMs
+    SetTimer(F1BNetGuardTick, 250)
+}
+
+StopF1BNetGuard() {
+    global _f1BNetGuardUntil, _f1BNetWasMinimized
+    _f1BNetGuardUntil   := 0
+    _f1BNetWasMinimized := Map()
+    SetTimer(F1BNetGuardTick, 0)
+}
+
+F1BNetGuardTick() {
+    global _f1BNetGuardUntil, _f1BNetWasMinimized, _bnetStallRevealed
+    if (!_f1BNetGuardUntil || A_TickCount >= _f1BNetGuardUntil) {
+        StopF1BNetGuard()
+        return
+    }
+    if _bnetStallRevealed
+        return                    ; the stall watch put it up on purpose
+    prev := A_DetectHiddenWindows
+    DetectHiddenWindows true
+    try {
+        for hwnd in _f1BNetWasMinimized {
+            try {
+                if !DllCall("user32\IsWindow", "Ptr", hwnd)
+                    continue
+                if !DllCall("user32\IsWindowVisible", "Ptr", hwnd)
+                    continue
+                if (WinGetMinMax("ahk_id " . hwnd) = -1)
+                    continue
+                _FSLog("F1-GUARD the launcher restored itself during an F1"
+                     . " block -- putting it back, silently")
+                _MinimizeWindowNoAnim(hwnd)
+            }
+        }
+    }
+    DetectHiddenWindows prev
+}
+
+; ══════════════════════════════════════════════════════════════════════════════
+;  STALLED-LAUNCH WATCH — update pending, or a sign-in the detector missed
+; ══════════════════════════════════════════════════════════════════════════════
+; The launcher now minimizes as soon as Play fires, without waiting to see
+; whether the game actually starts. That is right in the normal case and wrong
+; in exactly one: when Play could not start the game, because Battle.net is
+; downloading a patch, or wants credentials, or is showing something that needs
+; a human. Left alone the user would be staring at an empty desktop with a
+; minimized launcher and no idea why nothing happened.
+;
+; So the launcher goes away optimistically and comes BACK if it turns out to
+; have been needed. The test is the outcome, not the UI: no Hearthstone process
+; within CFG.bnetStallRevealMs of the Play command means Play did not work.
+; Reading Battle.net's own interface to find out why would mean matching
+; localised text in a CEF surface, which breaks on every client update and in
+; every language; the absence of a process does not.
+;
+; While waiting, the launch command is re-fired periodically. A download that
+; finishes leaves a client where Play now works, and nothing else would ever
+; press it -- TryLaunchWTCG fires exactly once per launch by design.
+global _bnetStallWatchUntil := 0
+global _bnetStallRevealed   := false
+global _bnetStallLastRetry  := 0
+
+StartBNetStallWatch() {
+    global _bnetStallWatchUntil, _bnetStallRevealed, _bnetStallLastRetry, CFG
+    _bnetStallWatchUntil := A_TickCount + CFG.bnetStallWatchMaxMs
+    _bnetStallRevealed   := false
+    _bnetStallLastRetry  := A_TickCount
+    SetTimer(BNetStallWatchTick, 1000)
+}
+
+StopBNetStallWatch() {
+    global _bnetStallWatchUntil
+    _bnetStallWatchUntil := 0
+    SetTimer(BNetStallWatchTick, 0)
+}
+
+BNetStallWatchTick() {
+    global CFG, _bnetStallWatchUntil, _bnetStallRevealed, _bnetStallLastRetry
+    global _bnetPlayFiredAt, _bnetLauncherHwnd
+
+    if !_bnetStallWatchUntil {
+        SetTimer(BNetStallWatchTick, 0)
+        return
+    }
+
+    ; The game arrived. Whether it took two seconds or twenty minutes, the
+    ; watch is done -- and if the launcher was brought back, put it away again.
+    if GetHSPID() {
+        if _bnetStallRevealed {
+            _FSLog("BNET-STALL Hearthstone launched -- re-minimizing the launcher")
+            try _BNetDropTopmost()
+            try _BNetDwellMinimize()
+        }
+        StopBNetStallWatch()
+        return
+    }
+
+    ; Battle.net itself is gone: nothing left to wait for.
+    if !ProcessExist("Battle.net.exe") {
+        StopBNetStallWatch()
+        return
+    }
+
+    if (A_TickCount >= _bnetStallWatchUntil) {
+        _FSLog("BNET-STALL giving up after " . CFG.bnetStallWatchMaxMs . "ms")
+        StopBNetStallWatch()
+        return
+    }
+
+    waited := _bnetPlayFiredAt ? (A_TickCount - _bnetPlayFiredAt) : 0
+    if (waited < CFG.bnetStallRevealMs)
+        return
+
+    ; ---- Bring the launcher back, once ----
+    if !_bnetStallRevealed {
+        _bnetStallRevealed := true
+        _FSLog("BNET-STALL no Hearthstone " . waited . "ms after Play"
+             . " -- restoring the launcher so the user can see what it wants"
+             . " (update or sign-in)")
+        try RestoreHiddenBNetServices()   ; the reason may BE a hidden surface
+        try {
+            prev := A_DetectHiddenWindows
+            DetectHiddenWindows true
+            for hwnd in WinGetList("ahk_exe Battle.net.exe") {
+                try {
+                    if _IsBlizzInfrastructureWindow(hwnd)
+                        continue
+                    if !_IsProtectedBNetMain(hwnd)
+                        continue
+                    if (WinGetMinMax("ahk_id " . hwnd) = -1)
+                        DllCall("ShowWindow", "Ptr", hwnd, "Int", 9)  ; SW_RESTORE
+                    _bnetLauncherHwnd := hwnd
+                    _BNetPinForeground(hwnd)
+                }
+            }
+            DetectHiddenWindows prev
+        }
+        BgHUD.Show("Battle.net needs attention — update or sign-in", 6000)
+        return
+    }
+
+    ; ---- Keep nudging Play while we wait ----
+    if (A_TickCount - _bnetStallLastRetry >= CFG.bnetRelaunchEveryMs) {
+        _bnetStallLastRetry := A_TickCount
+        _FSLog("BNET-STALL re-firing the launch command")
+        try LaunchWTCG()
+    }
 }
 
 _BNetSequenceMinimizeNow() {
@@ -6134,6 +7807,11 @@ MinimizeBNetAfterDwell() {
     _bnetPostMinDone := true
     StopBNetMinimizeSequence()
     _BNetDwellMinimize()
+    ; The launcher went away without waiting to see whether the game starts.
+    ; This is what notices if it should not have. Armed here because this
+    ; function is the once-only owner of the minimize; _BNetDwellMinimize is
+    ; also called BY the stall watch, and arming it there would re-arm itself.
+    StartBNetStallWatch()
 }
 
 _BNetDwellMinimize() {
@@ -6182,7 +7860,7 @@ _BNetDwellMinimize() {
                         try {
                             WinGetPos(&mx, &my, &mw, &mh, "ahk_id " . hwnd)
                             if (mw > 0 && GetMonitorIndexForPoint(mx + mw // 2, my + mh // 2) != ChosenMonIdx) {
-                                MonitorGetWorkArea(ChosenMonIdx, &mwaL, &mwaT, &mwaR, &mwaB)
+                                _SafeWorkArea(ChosenMonIdx, &mwaL, &mwaT, &mwaR, &mwaB)
                                 mwW := mwaR - mwaL, mwH := mwaB - mwaT
                                 nmx := (mw <= mwW) ? mwaL + (mwW - mw) // 2 : mwaL
                                 nmy := (mh <= mwH) ? mwaT + (mwH - mh) // 2 : mwaT
@@ -6256,7 +7934,7 @@ BNetPostLaunchMinimizeTick() {
                     try {
                         WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " . hwnd)
                         if (ww > 0 && GetMonitorIndexForPoint(wx + ww // 2, wy + wh // 2) != ChosenMonIdx) {
-                            MonitorGetWorkArea(ChosenMonIdx, &wwaL, &wwaT, &wwaR, &wwaB)
+                            _SafeWorkArea(ChosenMonIdx, &wwaL, &wwaT, &wwaR, &wwaB)
                             wwW := wwaR - wwaL, wwH := wwaB - wwaT
                             nwx := (ww <= wwW) ? wwaL + (wwW - ww) // 2 : wwaL
                             nwy := (wh <= wwH) ? wwaT + (wwH - wh) // 2 : wwaT
@@ -6293,7 +7971,7 @@ OverlayTopmostTick() {
     ; undeclared name inside a function is a LOCAL, and reading an unset local
     ; throws -- inside the try below, which would swallow it and skip the rest of
     ; the per-window body, silently disabling this entire enforcer.
-    global _fsAlphaApplied
+    global _fsAlphaApplied, _fsParked, _fsTabRemoved, _cloakState
     static HWND_TOPMOST   := -1
     static SWP_NOSIZE     := 0x0001
     static SWP_NOMOVE     := 0x0002
@@ -6305,7 +7983,7 @@ OverlayTopmostTick() {
     }
 
     hsForeground := false
-    try hsForeground := WinActive("ahk_exe Hearthstone.exe") != 0
+    hsForeground := _HSIsForeground()
 
     prev     := A_DetectHiddenWindows
     prevMode := A_TitleMatchMode
@@ -6325,7 +8003,17 @@ OverlayTopmostTick() {
 
                     if _fsAlphaApplied.Has(h)
                         _RemoveFSAlphaShield(h)
-                    _FSReleaseSurface(h)   ; unpark, then uncloak
+
+                    ; Release ONLY if something is actually holding this
+                    ; window. _FSReleaseSurface unparks, restores the taskbar
+                    ; button and force-uncloaks; running all three on the
+                    ; overlay every two seconds -- when the overlay is almost
+                    ; never parked, tab-stripped or cloaked -- was pure churn
+                    ; against the one window that must stay rock steady while
+                    ; the user has comps pinned to it.
+                    if (_fsParked.Has(h) || _fsTabRemoved.Has(h)
+                     || _cloakState.Has(h) || IsWindowCloakedDWM(h))
+                        _FSReleaseSurface(h)
 
                     if !hsForeground
                         continue
@@ -6735,8 +8423,8 @@ MonitorLockTick() {
     }
     ; Clean ownership: the monitor lock moves Battle.net + Agent ONLY.
     ; Hearthstone is owned exclusively by the HS placement guard
-    ; (HSPlacementGuardTick), whose corrections are cloak-wrapped so they are
-    ; invisible. Two systems, two disjoint window sets -- they can no longer
+    ; (HSPlacementGuardTick), which corrects the monitor only when the game
+    ; landed on the wrong one. Two systems, two disjoint window sets -- they can no longer
     ; fight over HS (the visible primary-monitor bounce). Firestone windows
     ; are not a lock concern at all; they are hidden, not placed.
     ; The launch sequence owns the launcher from reveal to minimize-complete.
@@ -6871,6 +8559,10 @@ _PrunePlacementMaps() {
     global _fsParked, _fsParkedRect, _fsTabRemoved, _fsBirthReassert, _fsMainLogged
     global _fsParkCycles, _fsMainCandidate, _fsProbeGaveUp, _fsRevealDone
     global _fsRevealSettled
+    ; The popup ledgers. Windows recycles HWNDs, so a stale entry here either
+    ; skips a genuinely new popup (seen as already-killed) or instantly ages a
+    ; brand-new window past the grace and closes a Main that is still forming.
+    global _fsPopupKilled, _fsPopupFirstSeen
     for m in [_placeCreateSeen, _placeFirstSeen, _bnetFirstMoved, _fsAlphaApplied
             , _fsDeferredPopupCloak, _moveBudget, _fsHiddenByUs, _fsShieldDown, _fsEverPainted, _cloakState, _bnetHideDone
             , _fsBirthHidden, _fsMinLastAttempt, _fsRevealFg, _bnetPostMinCount, _qtHelperLogged
@@ -6878,7 +8570,8 @@ _PrunePlacementMaps() {
             , _fsPaintState, _fsPaintProbeAt, _fsPaintHits, _fsColdSince
             , _fsParked, _fsParkedRect, _fsTabRemoved, _fsBirthReassert, _fsMainLogged
             , _fsParkCycles, _fsMainCandidate, _fsProbeGaveUp, _fsRevealDone
-            , _fsRevealSettled] {
+            , _fsRevealSettled
+            , _fsPopupKilled, _fsPopupFirstSeen] {
         dead := []
         for h in m {
             if !DllCall("user32\IsWindow", "Ptr", h)
@@ -6904,7 +8597,7 @@ _LockProcWindowsToChosenMonitor(exe, exactTitle := "", minAgeMs := 0) {
 
     waL := 0, waT := 0, waR := 0, waB := 0
     try {
-        MonitorGetWorkArea(idx, &waL, &waT, &waR, &waB)
+        _SafeWorkArea(idx, &waL, &waT, &waR, &waB)
     } catch {
         return
     }
@@ -7029,7 +8722,7 @@ _BNetFirstShowPlace(hwnd) {
             return
         }
 
-        MonitorGetWorkArea(ChosenMonIdx, &waL, &waT, &waR, &waB)
+        _SafeWorkArea(ChosenMonIdx, &waL, &waT, &waR, &waB)
         waW := waR - waL
         waH := waB - waT
         if (waW <= 0 || waH <= 0)
@@ -7152,7 +8845,16 @@ CancelLaunchTimers() {
     ; needs to know it exists.
     SetTimer(_BNetDwellMinimize,      0)   ; a pending dwell-minimize must
     SetTimer(MinimizeBNetAfterDwell,  0)   ; not fire into a post-abort reveal
+    SetTimer(_BNetSequenceMinimizeNow, 0)  ; nor may the scheduled one -- it is
+                                           ; armed as a one-shot when Play fires
+                                           ; and would otherwise outlive the
+                                           ; launch that armed it
     StopBNetPostLaunchMinimize()           ; -- nor may the post-Play linger
+    ; A pending Firestone launch must never outlive the pipeline that
+    ; scheduled it. Without this, F4 within the deferral window tears the
+    ; session down and then the timer fires and starts Overwolf again.
+    SetTimer(_FSDelayedLaunch, 0)
+    StopBNetStallWatch()
     _lateHSUntil := 0
     _bnetLaunchFiredAt := 0
     StopLauncherHide()
@@ -7161,9 +8863,12 @@ CancelLaunchTimers() {
 ; ==============================================================================
 ; SECTION 14: LAUNCH PIPELINE — F2 state machine
 ; ==============================================================================
-; States:  IDLE → OW_WAIT → HAMMERING → LOGIN_WAIT → DONE
+; States:  IDLE → HAMMERING → LOGIN_WAIT → DONE
 ;
-;   OW_WAIT    — Overwolf/Firestone is launching; waits for OverwolfBrowser.exe
+;   (OW_WAIT is gone. It existed to hold the pipeline while Overwolf started,
+;    back when Firestone was launched first and Hearthstone waited on it. That
+;    ordering is reversed -- Firestone now starts alongside everything else on
+;    F2 and nothing waits for it -- so the state was unreachable.)
 ;                stability before transitioning to HAMMERING.
 ;   HAMMERING  — Repeatedly steps TryLaunchWTCG until HS's window appears.
 ;                The gate walks Battle.net through client-start -> reveal ->
@@ -7174,26 +8879,12 @@ CancelLaunchTimers() {
 ;   DONE       — HS window detected; cleanup, focus, lock Firestone, arm F1.
 ; ==============================================================================
 
-; ── OW_WAIT entry ─────────────────────────────────────────────────────────────
-StartOWWait() {
-    global Launch, State, CFG
-    SetHSMonitorPref()
-    StartLaunchPlaceAssist()
-    StartBNetFirstShowAssist()
-    Launch.state        := "OW_WAIT"
-    Launch.owFirstSeen  := 0
-    Launch.lastAttempt  := 0            ; 0 = no real launch fired yet — the
-                                        ; gate below is stepped every tick
-    Launch.sessionStart := A_TickCount
-    Launch.loginEnteredAt := 0
-    TryLaunchWTCG()                     ; step 1: boot the bare client
-    SetTimer(LaunchStateMachine_Tick, CFG.owWaitPollMs)
-    SetTimer(LaunchHudWatchdog,       CFG.launchHudWatchMs)
-}
 
 ; ── HAMMERING entry ───────────────────────────────────────────────────────────
 StartHSLaunch() {
-    global Cache, State, Launch, CFG
+    global Cache, State, Launch, CFG, _smLastTick
+    _smLastTick := A_TickCount        ; baseline the liveness stamp: see the
+                                      ; stale-pipeline guard in Hotkey_F2
     SetHSMonitorPref()
     StartLaunchPlaceAssist()
     StartBNetFirstShowAssist()
@@ -7205,7 +8896,6 @@ StartHSLaunch() {
     Launch.sessionStart      := A_TickCount
     Launch.loginFallbackDone := false
     Launch.loginTitleCount   := 0
-    Launch.owFirstSeen       := 0
     Launch.loginEnteredAt    := 0
     TryLaunchWTCG()
     SetTimer(LaunchStateMachine_Tick, CFG.hammerFastMs)
@@ -7251,39 +8941,6 @@ LaunchStateMachine_Tick() {
         _lateHSUntil := A_TickCount + 600000
         SetTimer(LateHSWatch, 5000)
         BgHUD.Show("Launch slow — watching for HS in background", 2500)
-        return
-    }
-
-    ; ── OW_WAIT ──────────────────────────────────────────────────────────────
-    if (Launch.state = "OW_WAIT") {
-        if HSWindowExists() {
-            CompleteHSLaunchSuccess()
-            return
-        }
-        ; Never re-fire the launch command once Hearthstone's process exists: each
-        ; re-run makes the launcher re-surface and steal focus while the game is still
-        ; building its window.
-        if (!GetHSPID()
-         && (Launch.lastAttempt = 0 || (A_TickCount - Launch.lastAttempt) > 2000)) {
-            if TryLaunchWTCG()
-                Launch.lastAttempt := A_TickCount
-        }
-        if (ProcessExist("OverwolfBrowser.exe") || ProcessExist("Overwolf.exe")) {
-            if (Launch.owFirstSeen = 0)
-                Launch.owFirstSeen := A_TickCount
-            else if (A_TickCount - Launch.owFirstSeen >= CFG.owReadyStabilityMs) {
-                Cache.hsPath             := ""
-                Launch.state             := "HAMMERING"
-                Launch.retries           := 0
-                Launch.lastAttempt       := 0
-                Launch.loginFallbackDone := false
-                Launch.loginTitleCount   := 0
-                SetTimer(LaunchStateMachine_Tick, CFG.hammerFastMs)
-                TryLaunchWTCG()
-            }
-        } else {
-            Launch.owFirstSeen := 0
-        }
         return
     }
 
@@ -7498,70 +9155,70 @@ CompleteHSLaunchSuccess() {
 ; launchFirestoneWhenGameStarts, so the overlay still attaches. Hearthstone
 ; needs 30-60 seconds from process start to a playable menu, so Firestone is up
 ; long before a Battlegrounds match can begin.
-global _fsDeferredLaunchUntil := 0
-global _fsDeferredLaunchDone  := false
 
-StartFSDeferredLaunch(timeoutMs := 300000) {
-    global _fsDeferredLaunchUntil, _fsDeferredLaunchDone, CFG
-    if !CFG.fsLaunchAfterHS
+
+
+
+; The Firestone launch itself. Reached from _FSDelayedLaunch, CFG.fsLaunchDelayMs
+; after the F2 press -- see there for why it is deferred rather than immediate.
+; It arms all suppressors and launches Overwolf/Firestone.
+; Returns true if a launch was actually issued.
+; Schedule (or immediately perform) the Firestone launch.
+;
+; THE ZERO CASE IS NOT A TIMER. In AutoHotkey, SetTimer(fn, 0) DISABLES a timer
+; -- and a negative period of zero is still zero, so SetTimer(fn, -0) does not
+; "fire immediately", it switches the timer off. With fsLaunchDelayMs set to 0
+; that would mean Firestone silently never launches at all: no error, no log,
+; no overlay. A configuration value meaning "do it now" must not be able to
+; turn into "never do it" because of an API edge case.
+_FSScheduleLaunch() {
+    global CFG
+    SetTimer(_FSDelayedLaunch, 0)          ; cancel anything already pending
+    if (CFG.fsLaunchDelayMs <= 0) {
+        _FSLog("FS-LAUNCH immediate (fsLaunchDelayMs=0)")
+        _FSDelayedLaunch()
         return
-    _fsDeferredLaunchDone  := false
-    _fsDeferredLaunchUntil := A_TickCount + timeoutMs
-    SetTimer(FSDeferredLaunchTick, 500)
-    _FSLog("FS-DEFER armed -- Firestone will launch once Hearthstone.exe exists")
+    }
+    SetTimer(_FSDelayedLaunch, -CFG.fsLaunchDelayMs)
+    _FSLog("FS-LAUNCH scheduled in " . CFG.fsLaunchDelayMs . "ms")
 }
 
-StopFSDeferredLaunch() {
-    global _fsDeferredLaunchUntil
-    _fsDeferredLaunchUntil := 0
-    SetTimer(FSDeferredLaunchTick, 0)
-}
 
-FSDeferredLaunchTick() {
-    global _fsDeferredLaunchUntil, _fsDeferredLaunchDone, CFG
-    static hsSeenAt := 0
-
-    if (!_fsDeferredLaunchUntil || _fsDeferredLaunchDone) {
-        hsSeenAt := 0
-        StopFSDeferredLaunch()
+; One-shot timer target for the deferred Firestone launch.
+;
+; Re-checks FirestoneAppRunning at FIRE time, not at schedule time: five
+; seconds is long enough for the user to have started it themselves, or for a
+; second F2 to have arrived, and launching a second copy of Overwolf is worse
+; than not launching one at all.
+_FSDelayedLaunch() {
+    if FirestoneAppRunning() {
+        _FSLog("FS-LAUNCH deferred fire: Firestone is already running, nothing to do")
         return
     }
-    ; Timeout: HS never arrived. Launch Firestone anyway rather than silently
-    ; never launching it -- a session with no overlay is worse than a session
-    ; whose overlay came up during a messy launch.
-    if (A_TickCount >= _fsDeferredLaunchUntil) {
-        hsSeenAt := 0
-        _FSLog("FS-DEFER timed out waiting for Hearthstone -- launching Firestone anyway")
-        _fsDeferredLaunchDone := true
-        StopFSDeferredLaunch()
-        LaunchFirestoneNow()
-        return
-    }
-    if !GetHSPID() {
-        hsSeenAt := 0
-        return
-    }
-    if !hsSeenAt {
-        hsSeenAt := A_TickCount
-        return
-    }
-    if (A_TickCount - hsSeenAt < CFG.fsLaunchAfterHSDelayMs)
-        return
-
-    hsSeenAt := 0
-    _fsDeferredLaunchDone := true
-    StopFSDeferredLaunch()
-    _FSLog("FS-DEFER Hearthstone up -- launching Firestone into a quiet system")
     LaunchFirestoneNow()
 }
 
-; The Firestone launch itself, lifted verbatim out of Hotkey_F2 so both the
-; immediate and the deferred path run identical code. Returns true if a launch
-; was actually issued.
 LaunchFirestoneNow() {
     global State, CFG
     if FirestoneAppRunning()
         return false
+
+    ; ---- RESOLVE FIRST, ARM SECOND ----
+    ; This used to arm the whole suppressor bundle -- a 1 ms sweep, a 3 ms
+    ; cloak, a 10 ms loading watch, a 750 ms popup sweeper -- and only then ask
+    ; whether there was anything to launch. On a machine with no Overwolf or no
+    ; Firestone that meant every F2 press started a full choreography against
+    ; windows that could never exist, at up to a thousand enumerations a second
+    ; on a script running at high process priority, for up to two minutes. The
+    ; user paid the entire cost of a feature they do not have.
+    cmd := _ResolveFirestoneLaunch()
+    if (cmd = "") {
+        _FSLog("FS-LAUNCH no Overwolf/Firestone install found -- skipping the"
+             . " Firestone stage entirely (this is not an error; the rest of"
+             . " the session is unaffected)")
+        StandDownFirestoneSubsystems()
+        return false
+    }
 
     ; Re-arm the suppressors at the moment of launch.
     ;
@@ -7570,6 +9227,7 @@ LaunchFirestoneNow() {
     ; Hearthstone appearing is the trigger for launching Firestone -- so without
     ; this they would be switched off shortly before the windows they exist to
     ; suppress are created. Suppressors belong where the windows are born.
+    ; With immediate launch, this is the right place to arm them.
     if State.fsMainLocked {
         StartLauncherHide()
         SetTimer(StopLauncherHide, -60000)   ; bounded: never outlive the launch
@@ -7588,22 +9246,93 @@ LaunchFirestoneNow() {
         Sleep(CFG.fsLaunchArmSettleMs)
     }
 
-    fsCmd := GetFirestoneCmd()
-    if (fsCmd != "") {
-        try Run(fsCmd)
-        return true
-    }
-    appId  := GetFirestoneAppId()
-    owPath := GetOverwolfPath()
-    if (owPath != "" && appId != "") {
-        try Run('"' . owPath . '" -launchapp ' . appId)
-        return true
-    }
-    if (owPath != "") {
-        try Run('"' . owPath . '"')
-        return true
-    }
+    try Run(cmd)
+    ; Run() returning without throwing means a process was STARTED, not that
+    ; Firestone works. A crash a second later -- the "critical error, no
+    ; overlay" a user reported -- is indistinguishable from success at this
+    ; point, and nothing downstream ever asked again, so the suppressors ran
+    ; for the rest of the session waiting for windows that were never coming.
+    ; This asks, once, well after any healthy start-up would have finished.
+    SetTimer(FirestoneHealthCheck, -CFG.fsHealthCheckMs)
+    return true
+}
+
+; Is there anything to manage? Cheap, cached, and never throws.
+;
+; The whole Firestone half of this script is optional. Every path that arms a
+; Firestone timer asks this first, so a user who has never installed Overwolf
+; runs a script that launches Hearthstone and does nothing else -- rather than
+; one that polls an empty window list at 50 ms for the rest of the session.
+FirestoneInstalled() {
+    try return (_ResolveFirestoneLaunch() != "")
     return false
+}
+
+; Build the command that starts Firestone, or "" if there is nothing to start.
+; Pure lookup: no side effects, safe to call before deciding anything.
+_ResolveFirestoneLaunch() {
+    fsCmd := GetFirestoneCmd()
+    if (fsCmd != "")
+        return fsCmd
+    owPath := GetOverwolfPath()
+    if (owPath = "")
+        return ""
+    appId := GetFirestoneAppId()
+    return (appId != "")
+        ? ('"' . owPath . '" -launchapp ' . appId)
+        : ('"' . owPath . '"')
+}
+
+; Did Firestone actually come up? If not, stop waiting for it.
+; RETRIED, NOT ONE-SHOT.
+;
+; A single check meant "not running yet" and "never coming" were the same
+; answer, and standing everything down on the first was the worse mistake: the
+; suppressors would be switched off moments before a slow Overwolf finally
+; produced its windows, so Firestone - Main would flash on screen -- the exact
+; bug this subsystem exists to prevent, reintroduced by its own safety net.
+; Three checks put the verdict past three minutes, which is beyond any healthy
+; start-up, so "absent" really does mean absent.
+FirestoneHealthCheck() {
+    global CFG
+    static tries := 0
+    if FirestoneAppRunning() {
+        tries := 0
+        _FSLog("FS-HEALTH Firestone is running")
+        return
+    }
+    tries += 1
+    if (tries < 3) {
+        _FSLog("FS-HEALTH Firestone not up yet (check " . tries . " of 3)"
+             . " -- giving it another " . CFG.fsHealthCheckMs . "ms")
+        SetTimer(FirestoneHealthCheck, -CFG.fsHealthCheckMs)
+        return
+    }
+    tries := 0
+    _FSLog("FS-HEALTH Firestone was launched but never appeared -- it most"
+         . " likely failed to start. Standing down the Firestone subsystems;"
+         . " Hearthstone and the hotkeys are unaffected")
+    try BgHUD.Show("Firestone did not start — continuing without it", 3000)
+    StandDownFirestoneSubsystems()
+}
+
+; Switch off everything that exists only to manage Firestone windows.
+;
+; Called when Firestone is not installed, and when it was launched but died.
+; Deliberately does NOT touch State.fsMainLocked: F3 stays meaningful, so if
+; the user starts Firestone by hand later the lock is still in the state they
+; expect. It only stops the timers that would otherwise poll forever -- the
+; 50 ms coast sweep, the 100 ms loading guard, the 750 ms popup sweeper -- for
+; windows that do not exist.
+StandDownFirestoneSubsystems() {
+    try StopFSBurst()
+    try SetTimer(FSMainMonitor,                 0)
+    try StopKillFirestoneLoading()
+    try SetTimer(SuppressFirestoneLoadingTick,  0)
+    try StopFSNotifSweeper()
+    try StopEarlyOverwolfCloak()
+    try StopLauncherHide()
+    try StopFSReveal()
 }
 
 ; ── Late‑HS recovery (post‑ceiling cold launches) ─────────────────────────────
@@ -7659,11 +9388,134 @@ CompleteHSLaunchLate() {
 ; than swallowed, so Windows receives them normally. Unmodified F1-F4 are
 ; unaffected: they still match here, and the SC03B..SC03E aliases below (which
 ; require no modifiers anyway) are a second path to the same handlers.
+;
+; ── FAIL-OPEN, AND SELF-HEALING ──────────────────────────────────────────────
+; This one function decides whether ANY of the four hotkeys are live. That
+; makes it the single most dangerous piece of code in the script: if it ever
+; returns false and stays there, all four keys go silently inert -- no handler
+; runs, no HUD toast, no log line, nothing to see. A user reported exactly that
+; after a launch in which Firestone threw a critical error.
+;
+; The mechanism is a keyboard-state desync. GetKeyState(key, "P") reads the
+; OS's PHYSICAL key state, which goes stale when a low-level keyboard hook
+; chain is disrupted -- and Overwolf installs a global keyboard hook to deliver
+; its own overlay hotkeys, so an Overwolf/Firestone crash is precisely the
+; event that can drop a modifier's key-up. The modifier is then reported held
+; forever, and this gate reports "a system chord is in progress" forever.
+;
+; Three defences, in order of when they act:
+;
+;   1. BOTH STATES MUST AGREE. A modifier counts as held only when the logical
+;      AND physical states say so. A one-sided desync -- the common kind --
+;      no longer blocks anything.
+;   2. FAIL OPEN. Any exception reading key state returns TRUE (hotkeys live).
+;      A gate that cannot read the keyboard must not be the reason the user
+;      cannot press F4 to shut down.
+;   3. SELF-HEAL. The moment this gate STARTS refusing is stamped below, and
+;      HK_ReachabilityWatchdog treats a gate that has been refusing
+;      continuously as proof the modifier state is wrong -- which is the only
+;      test that catches the user pressing dead F-keys, because their presses
+;      keep the system idle timer at zero.
+;
+; What this does NOT change: a real Alt+F4 / Ctrl+F4 / Win+F4 still passes
+; through to Windows untouched, because a genuinely held modifier sets both
+; states and is released within milliseconds of the chord ending.
+global _hkGateBlockedSince := 0
 HK_NoSysMods() {
-    return !GetKeyState("Alt",  "P")
-        && !GetKeyState("Ctrl", "P")
-        && !GetKeyState("LWin", "P")
-        && !GetKeyState("RWin", "P")
+    global _hkGateBlockedSince
+    try {
+        clear := !_HKModHeld("Alt")  && !_HKModHeld("Ctrl")
+              && !_HKModHeld("LWin") && !_HKModHeld("RWin")
+    } catch {
+        _hkGateBlockedSince := 0
+        return true                  ; unreadable: fail OPEN, never inert
+    }
+    if clear {
+        _hkGateBlockedSince := 0
+        return true
+    }
+    if !_hkGateBlockedSince
+        _hkGateBlockedSince := A_TickCount
+    return false
+}
+
+; A modifier is "held" only when the logical and physical states agree.
+_HKModHeld(key) {
+    return GetKeyState(key) && GetKeyState(key, "P")
+}
+
+; Releases a modifier the OS is reporting as held when nothing is being typed.
+;
+; The test is deliberately conservative: a modifier must report held AND there
+; must have been no physical input at all for CFG.hkStuckModifierMs. Holding a
+; modifier generates no input events, but no real chord lasts ten seconds --
+; Alt-tabbing sends Tab presses, which reset the idle timer. So this fires only
+; on a state that cannot be produced by a human hand.
+;
+; The repair is to send the key-up the OS never received. If the modifier
+; really was held, the only consequence is that it is released, which is also
+; what the user would have done next.
+HK_ReachabilityWatchdog() {
+    global _hkGateBlockedSince, CFG, State, Launch
+
+    ; ---- 1. Reconcile the launch flag with the launch state ----
+    ; State.f2Active gates F1 and F2. Launch.state is what the pipeline
+    ; actually thinks it is doing. When the flag says "launching" and the state
+    ; machine says IDLE or DONE, the flag is a leftover -- and a leftover here
+    ; costs the user two of their four keys. Clearing it is always safe: a real
+    ; launch keeps Launch.state on one of the working states for its whole life.
+    try {
+        if (State.f2Active && !_LaunchPipelineAlive()
+         && (Launch.state = "IDLE" || Launch.state = "DONE")) {
+            State.f2Active := false
+            _FSLog("HOTKEY reconciled: f2Active was set with Launch.state="
+                 . Launch.state . " -- cleared so F1/F2 are usable")
+        }
+    }
+
+    ; ---- 2. Release a stuck system modifier ----
+    if !CFG.hkStuckModifierRepair
+        return
+    stuck := ""
+    try {
+        ; TWO WAYS TO QUALIFY, and the second is the one that matters.
+        ;
+        ; (a) IDLE. A modifier reports held while nothing at all is being
+        ;     typed for hkStuckModifierMs. Conservative: holding a modifier
+        ;     generates no input events, but no real chord lasts ten seconds --
+        ;     Alt-tabbing sends Tab presses, which reset the idle timer.
+        ;
+        ; (b) THE GATE HAS BEEN BLOCKING. A_TimeIdlePhysical is reset by every
+        ;     keypress -- INCLUDING the F-key presses that are being swallowed.
+        ;     So the exact user who most needs this repair, the one pressing F2
+        ;     over and over because nothing is happening, keeps the idle timer
+        ;     near zero and would never have qualified under (a) alone. That is
+        ;     precisely the reported failure. HK_NoSysMods stamps the moment it
+        ;     began refusing; if it has been refusing continuously for this
+        ;     long, the modifier state is wrong no matter how busy the keyboard
+        ;     looks.
+        idleStuck  := (A_TimeIdlePhysical >= CFG.hkStuckModifierMs)
+        gateStuck  := (_hkGateBlockedSince
+                    && (A_TickCount - _hkGateBlockedSince) >= CFG.hkGateBlockedMs)
+        if !(idleStuck || gateStuck)
+            return
+        for key in ["Alt", "Ctrl", "LWin", "RWin"] {
+            if _HKModHeld(key)
+                stuck .= (stuck = "" ? "" : ",") . key
+        }
+    } catch {
+        return
+    }
+    if (stuck = "")
+        return
+    _FSLog("HOTKEY stuck modifier(s) " . stuck . " held with "
+         . A_TimeIdlePhysical . "ms of no physical input -- releasing so the"
+         . " F-keys come back")
+    for key in StrSplit(stuck, ",") {
+        try Send("{" . key . " up}")
+    }
+    _hkGateBlockedSince := 0
+    try BgHUD.Show("Hotkeys restored", 1200)
 }
 
 ; ── F1 — Disconnect / Reconnect ──────────────────────────────────────────────
@@ -7673,6 +9525,23 @@ $*F1::Hotkey_F1()
 SC03B::Hotkey_F1()
 #HotIf
 
+; Is the launch pipeline genuinely running, or just flagged as running?
+;
+; The single answer both F1 and F2 use. "Running" means the state machine has
+; ticked recently; anything else is a corpse holding a flag. A stamp of 0 means
+; it never ticked at all, which is the cold-launch failure and is also dead.
+; Kept deliberately small and total -- it must never throw, because both
+; hotkeys' availability depends on it returning.
+_LaunchPipelineAlive() {
+    global _smLastTick
+    try {
+        if (_smLastTick = 0)
+            return false
+        return (A_TickCount - _smLastTick) <= 4000
+    }
+    return false
+}
+
 ; F1 FAILSAFE: removes the firewall block AND the input shield unconditionally.
 ; Armed as a one-shot the moment a block is applied, so even if the F1 thread
 ; dies (exception, script reload, external kill) the game is never left
@@ -7681,10 +9550,15 @@ SC03B::Hotkey_F1()
 _F1FailsafeRelease() {
     try RemoveIPBlock()
     try StopHSInputShield()
+    ; The Battle.net guard is deliberately NOT stopped here. It is bounded and
+    ; self-expiring, and this failsafe only runs when the F1 thread died -- the
+    ; case where a disconnect-driven restore is MOST likely. Cancelling it here
+    ; would switch the protection off exactly when it is most needed.
 }
 
 Hotkey_F1() {
     global State, CFG
+    _HotkeyTone("F1")
 
     hsPID := GetHSPID()
     if (!hsPID) {
@@ -7696,9 +9570,20 @@ Hotkey_F1() {
         return
     }
 
+    ; F1 stands aside during a launch -- but only for a launch that is actually
+    ; running. State.f2Active is a plain flag; if the pipeline dies without
+    ; clearing it, this early return disables F1 for the rest of the session
+    ; with nothing but a toast to say why. The same staleness test Hotkey_F2
+    ; uses decides it here, so the two agree on what "in progress" means and
+    ; neither can be wedged by a flag nobody cleared.
     if State.f2Active {
-        BgHUD.Show("F1 ignored — launch in progress", 1200)
-        return
+        if _LaunchPipelineAlive() {
+            BgHUD.Show("F1 ignored — launch in progress", 1200)
+            return
+        }
+        _FSLog("F1 proceeding: f2Active was set but the launch pipeline is"
+             . " stale -- clearing the flag")
+        State.f2Active := false
     }
 
     BgHUD.Show("Skip…")
@@ -7761,6 +9646,10 @@ Hotkey_F1() {
         ; never reaches its own cleanup below.
         SetTimer(_F1FailsafeRelease, -(CFG.forcefulHoldMs + 3000))
 
+        ; Keep the Battle.net launcher down for the hold and a few seconds
+        ; after -- the window in which a disconnect-driven restore would land.
+        StartF1BNetGuard(CFG.forcefulHoldMs + 6000)
+
         ; ---- FIXED HOLD ----
         ; Every press blocks for exactly CFG.forcefulHoldMs, then releases and
         ; lets the game run its own reconnect. A fixed duration is deliberate:
@@ -7810,6 +9699,7 @@ SC03C::Hotkey_F2()
 
 Hotkey_F2() {
     global State, Cache, Launch, CFG, _smLastTick
+    _HotkeyTone("F2")
 
 
     if !State.startupDone {
@@ -7826,7 +9716,18 @@ Hotkey_F2() {
     ; ticks every few hundred ms at most, so a >4s gap means dead.
     launchingNow := (State.f2Active || (Launch.state != "IDLE" && Launch.state != "DONE"))
     if launchingNow {
-        pipelineDead := (_smLastTick != 0 && (A_TickCount - _smLastTick) > 4000)
+        ; A pipeline that has never ticked is DEAD, not busy.
+        ;
+        ; This read `_smLastTick != 0 && ...`, which meant a stamp of 0 could
+        ; never be judged stale no matter how much time passed. _smLastTick is
+        ; written by LaunchStateMachine_Tick, so a launch that died before its
+        ; first tick -- the cold-start case, where Launch.state leaves IDLE
+        ; several calls before the timer is armed -- left the stamp at 0 and
+        ; this guard returned early on EVERY subsequent press. F2 was inert for
+        ; the rest of the session, and F1 with it (it refuses to run while
+        ; f2Active). Both entry points now baseline the stamp, and a 0 here is
+        ; treated as dead so an older build's state cannot wedge this one.
+        pipelineDead := !_LaunchPipelineAlive()
         if !pipelineDead
             return                      ; genuinely busy: block re-entry
         ; Stale/dead pipeline -- reset and fall through to a fresh launch.
@@ -7852,7 +9753,7 @@ Hotkey_F2() {
 
         StartLauncherHide()
 
-        StartFSNotifSweeper()
+        ; StartFSNotifSweeper()   ; removed – already running from startup
 
         BgHUD.Show("Restarting Hearthstone…", 0)
 
@@ -7889,7 +9790,23 @@ Hotkey_F2() {
         ; the case where Overwolf died or was closed between sessions: without
         ; it, a restart would leave you with no overlay and nothing watching
         ; for that. LaunchFirestoneNow() self-checks FirestoneAppRunning().
-        StartFSDeferredLaunch()
+        ; The deferred launch is no longer used; we launch Firestone immediately
+        ; if it isn't running.
+        ; ── FIRESTONE STARTS BEFORE HEARTHSTONE, AND THAT ORDER MATTERS ─────
+        ; Firestone reads the game's memory to drive its overlay. Starting it
+        ; BEFORE Hearthstone exists lets it be in place and waiting as the game
+        ; comes up; starting it midway through Hearthstone's initialisation
+        ; makes it attach to a process that is not ready, which fails with
+        ; "CRITICAL ERROR: Could not read the game's memory" and leaves the user
+        ; with no overlay for the session.
+        ;
+        ; A delay was briefly introduced here to move Firestone's windows out of
+        ; the busiest part of the launch, so a birth-time concealment race had
+        ; less to compete with. It fixed a cosmetic flash and broke the product.
+        ; See CFG.fsLaunchDelayMs, which is 0 for this reason.
+        if !FirestoneAppRunning() {
+            _FSScheduleLaunch()
+        }
 
         StartHSLaunch()
 
@@ -7906,34 +9823,25 @@ Hotkey_F2() {
 
         StartLauncherHide()
 
-        StartFSNotifSweeper()
+        ; StartFSNotifSweeper()   ; removed – already running from startup
 
         EnsureFirestoneSettings()
 
         if Launch.bnetWasRunning
             Launch.skipLoginDetect := true
 
-        ; ── LAUNCH ORDER ────────────────────────────────────────────────
-        ; With CFG.fsLaunchAfterHS (the default) Firestone is NOT started
-        ; here. The pipeline goes straight to Battle.net -> Hearthstone, and
-        ; FSDeferredLaunchTick starts Firestone once HS's process exists, so
-        ; Firestone - Main is born after the launch storm rather than in the
-        ; middle of it. See StartFSDeferredLaunch for the full reasoning.
-        ;
-        ; OW_WAIT is skipped on this path by design: its only job was to pace
-        ; the pipeline behind an Overwolf that, on this path, has not been
-        ; asked to start yet. It remains intact and is still used when
-        ; fsLaunchAfterHS is false.
-        if CFG.fsLaunchAfterHS {
-            StartFSDeferredLaunch()
-            StartHSLaunch()
-        } else if !FirestoneAppRunning() {
-            LaunchFirestoneNow()
-            Sleep(300)
-            StartOWWait()
-        } else {
-            StartHSLaunch()
+        ; ── LAUNCH ORDER ──────────────────────────────────────────────────────
+        ; Firestone is launched immediately, at the same time as Battle.net.
+        ; The old deferred launch (waiting for Hearthstone.exe) is removed.
+        ; Launch Firestone if it isn't already running.
+        if !FirestoneAppRunning() {
+            ; Same ordering as the restart path above: Firestone goes up
+            ; before Hearthstone so it can attach cleanly. See
+            ; _FSScheduleLaunch and CFG.fsLaunchDelayMs.
+            _FSScheduleLaunch()
         }
+        ; Start the Hearthstone launch pipeline (Battle.net → Play → HS)
+        StartHSLaunch()
     }
 }
 
@@ -7947,6 +9855,7 @@ SC03E::Hotkey_F4()
 Hotkey_F4() {
     Critical(false)
     global State, Launch, _f4Shutdown
+    _HotkeyTone("F4")
 
     try {
         ; ── Shutdown: do not restore what is about to be killed ─────────────
@@ -7977,7 +9886,12 @@ Hotkey_F4() {
         StopMonitorLock()
         StopFSReveal()
         StopBNetPostLaunchMinimize()
-        StopFSDeferredLaunch()
+        SetTimer(_FSDelayedLaunch, 0)   ; F4 means stop -- including the
+                                       ; Firestone launch that has not
+                                       ; happened yet. Without this, F4
+                                       ; inside the deferral window tears
+                                       ; the session down and the timer
+                                       ; then starts Overwolf again.
 
 ; (_FSUnparkAll deliberately NOT called here -- see the note above.)
 
@@ -8035,8 +9949,73 @@ $*F3::Hotkey_F3()
 SC03D::Hotkey_F3()
 #HotIf
 
+; Has a window titled exactly "Firestone - Main" ever existed this session?
+;
+; Latched, not polled: once true it stays true, so the scan below runs only
+; while the answer is still no. Enumerating hidden windows is required -- Main
+; is concealed the moment it appears, and a concealed window is still a window
+; that has opened.
+global _fsMainEverOpened := false
+FSMainHasOpened() {
+    global _fsMainEverOpened, _fsParked, _fsHiddenByUs
+    if _fsMainEverOpened
+        return true
+
+    ; A SECOND WAY TO QUALIFY, so this gate cannot wedge shut.
+    ;
+    ; The primary test is an exact "Firestone - Main" title. If a Firestone
+    ; build ever names that window differently, that test would fail on every
+    ; press forever and F3 would be dead with nothing to tell the user why. So
+    ; anything the script is ALREADY concealing counts too: if there is a
+    ; Firestone window parked or hidden, there is by definition something for
+    ; F3 to reveal, whatever it happens to call itself.
+    if (_fsParked.Count || _fsHiddenByUs.Count) {
+        _fsMainEverOpened := true
+        return true
+    }
+    prev := A_DetectHiddenWindows
+    DetectHiddenWindows true          ; Main is hidden on purpose; still counts
+    try {
+        for exe in ["Overwolf.exe", "OverwolfBrowser.exe"] {
+            for h in WinGetList("ahk_exe " . exe) {
+                try {
+                    if IsFirestoneMainTitle(WinGetTitle("ahk_id " . h)) {
+                        _fsMainEverOpened := true
+                        break
+                    }
+                }
+            }
+            if _fsMainEverOpened
+                break
+        }
+    }
+    DetectHiddenWindows prev
+    return _fsMainEverOpened
+}
+
 Hotkey_F3() {
     global State
+
+    ; ── F3 IS COMPLETELY INERT UNTIL FIRESTONE MAIN EXISTS ──────────────────
+    ; Before that point there is nothing for it to toggle, and every part of
+    ; pressing it is a liability rather than a no-op:
+    ;
+    ;   * It flips State.fsMainLocked, which is what tells the suppression
+    ;     subsystems to conceal Firestone's windows AS THEY ARE BORN. Unlocking
+    ;     before Main exists disarms the concealment for the exact window it
+    ;     was armed for, so the window arrives visible.
+    ;   * It clears State.f2Active, standing the launch pipeline's Firestone
+    ;     stage down mid-flight.
+    ;   * It plays a note, which says "that did something" when it did not.
+    ;
+    ; This returns BEFORE the tone and before the debounce stamp, so an early
+    ; press is silent and costs nothing -- it is not consumed, not queued, and
+    ; not remembered. The first press after Main opens behaves as the first
+    ; press.
+    if !FSMainHasOpened()
+        return
+
+    _HotkeyTone("F3")
 
     ; Debounce: rapid re-toggling style-flaps the CEF window (layered alpha
     ; on/off + a FRAMECHANGED SetWindowPos per cycle) -- the documented wedge
@@ -8059,8 +10038,25 @@ Hotkey_F3() {
     ; test they stack up. Critical makes the whole state change one indivisible
     ; step; the body contains no Sleep, so nothing is starved, and it clears
     ; automatically when the thread ends.
+    ; CRITICAL COVERS THE STATE CHANGE ONLY -- NOT THE WINDOW WORK.
+    ;
+    ; Critical(true) forbids every other thread from running: no timer, no
+    ; other hotkey, nothing. That is exactly right for flipping the flag and
+    ; stopping the timers, which is a handful of assignments and cannot block.
+    ; It was catastrophically wrong for the window work that used to sit inside
+    ; it -- StartFSReveal and LockFirestoneMain both enumerate every Overwolf
+    ; window and touch each one, and a single call that stalls on a crashed
+    ; Firestone window then freezes the ENTIRE script, hotkeys included, with
+    ; no watchdog able to run either (they are timers, and timers are exactly
+    ; what Critical is suppressing). One slow window call became "nothing
+    ; responds".
+    ;
+    ; The atomicity that mattered is still here: the flag and the timers change
+    ; together, so no sweep can observe a half-applied toggle. The subsequent
+    ; window work is idempotent and re-entrancy is already handled by the 250 ms
+    ; debounce above and by each function's own guards.
+    unlocking := false
     Critical(true)
-
     try {
         if State.fsMainLocked {
             State.fsMainLocked := false
@@ -8070,8 +10066,31 @@ Hotkey_F3() {
                                       ; launch-mode for the FS subsystems.
                                       ; Double-F2 is prevented by the pipeline
                                       ; guard in Hotkey_F2, not by this flag.
-            StopFSNotifSweeper()
+            ; THE NOTIFICATION SWEEPER IS NOT STOPPED HERE. DO NOT ADD IT BACK.
+            ;
+            ; It used to be, and that single line is what made the popup "linked
+            ; to F3". Stopping the closer is bad enough on its own -- but it also
+            ; runs immediately before StopEarlyOverwolfCloak below, which checks
+            ; whether the sweeper is alive to decide whether to HAND a popup over
+            ; or RELEASE it. With the sweeper just killed, that check fails, the
+            ; popup is uncloaked instead of handed over, and nothing is left
+            ; running to close it. Press F3, get a painted popup that never goes
+            ; away.
+            ;
+            ; The lock decides whether FIRESTONE'S OWN windows are on screen. A
+            ; notification is not one of those and never was.
             StopEarlyOverwolfCloak()
+            unlocking := true
+        }
+    } catch {
+        Critical(false)
+        BgHUD.Show("F3 error – reset", 1200)
+        return
+    }
+    Critical(false)
+
+    try {
+        if unlocking {
             StartFSReveal()
             BgHUD.Show("FS Unlocked", 800)
         } else {
@@ -8107,7 +10126,60 @@ if !A_IsAdmin {
     ExitApp()
 }
 
-A_IconTip := "Battle Grounds — running"
+A_IconTip := "Battle Grounds " . HSBG_BUILD . " — running"
+
+; ── Tray menu: reach the settings file without hunting for it ────────────────
+; The settings file can end up in one of two folders depending on whether the
+; script's own folder turned out to be writable, and a user should never have
+; to work out which. These two items remove the question entirely.
+;
+; There is a second, less obvious reason "Open settings" earns its place: this
+; script runs ELEVATED, so an editor launched from here is elevated too. If the
+; .ini did land somewhere only an administrator can write, opening it this way
+; is the one route that can actually save the file. That is precisely the
+; failure this menu exists to answer.
+try {
+    A_TrayMenu.Insert("1&")                       ; separator above the defaults
+    A_TrayMenu.Insert("1&", "What is under my cursor?", (*) => WhatIsUnderCursor())
+    A_TrayMenu.Insert("1&", "Test hotkey sound", (*) => TestHotkeySound())
+    A_TrayMenu.Insert("1&", "Reload settings", (*) => ReloadUserConfig())
+    A_TrayMenu.Insert("1&", "Open settings (HSBG.ini)", (*) => OpenConfigFile())
+}
+
+OpenConfigFile() {
+    path := _ConfigPath()
+    try {
+        if !FileExist(path)
+            _WriteDefaultConfig(path)
+        _MakeConfigEditable(path)
+        Run('notepad.exe "' . path . '"')       ; explicit: no file association
+    } catch {                                   ; needed, and it can always save
+        try Run(path)
+    }
+}
+
+; Re-read HSBG.ini and apply what can be applied without a restart.
+;
+; Honest about its limits: the monitor lock starts and stops cleanly, and the
+; hotkey tones only need their files built. Anything else in CFG was consumed
+; during start-up and is not revisited, which is why the file itself tells the
+; user to restart rather than promising this covers everything.
+ReloadUserConfig() {
+    global CFG
+    LoadUserConfig()
+    try {
+        if CFG.lockWindowsToChosenMonitor
+            StartMonitorLock()
+        else
+            StopMonitorLock()
+    }
+    if CFG.hotkeyAudio
+        try EnsureHotkeyTones()
+    _FSLog("CONFIG reloaded from " . _ConfigPath()
+         . " -- MonitorLock=" . (CFG.lockWindowsToChosenMonitor ? 1 : 0)
+         . " HotkeyAudio="    . (CFG.hotkeyAudio ? 1 : 0))
+    BgHUD.Show("Settings reloaded", 1500)
+}
 
 ; Apply configured script process priority.
 if CFG.scriptAboveNormalPriority
@@ -8272,7 +10344,6 @@ ExitCleanup(*) {
     try StopOverlayTopmostEnforcer()
     try StopMonitorLock()
     try StopFSReveal()
-    try StopFSDeferredLaunch()
     ; LEAVE NO TRACE, park edition. A window left parked outside the virtual
     ; desktop by an exiting instance has no taskbar button and no Alt-Tab
     ; entry, so nothing could ever bring it back. Unpark our ledger, then
@@ -8288,6 +10359,10 @@ ExitCleanup(*) {
     try SetTimer(StopKillFirestoneLoading,    0)
     try SetTimer(HSHiddenLaunchWatch,         0)
     try SetTimer(RevealHSAfterLaunch,         0)
+    try SetTimer(BNetStallWatchTick,          0)
+    try SetTimer(F1BNetGuardTick,             0)
+    try SetTimer(BNetMinimizeSequenceTick,    0)
+    try SetTimer(HK_ReachabilityWatchdog,     0)
 
     try {
         prev := A_DetectHiddenWindows
@@ -8310,10 +10385,25 @@ ExitCleanup(*) {
 
 ; One‑shot startup cleanup: run synchronously so first F2 cannot race it.
 StartupCleanup() {
-    global State
+    global State, CFG, HSBG_BUILD
     try DeleteRules()
     try DeleteGameRule()
     State.startupDone := true
+
+    ; The settings actually in force go to the LOG ONLY.
+    ;
+    ; This briefly showed them on the HUD at every launch as well. That was
+    ; added to make a config problem diagnosable at a glance, and it did -- but
+    ; nobody asked for a start-up banner, and a message that appears every
+    ; single launch to tell you nothing has gone wrong is noise. The
+    ; information is still recorded, and the tray menu can report it on demand;
+    ; it just no longer interrupts a launch that is working.
+    try {
+        _FSLog("STARTUP " . HSBG_BUILD . " settings in force: MonitorLock="
+             . (CFG.lockWindowsToChosenMonitor ? 1 : 0) . " HotkeyAudio="
+             . (CFG.hotkeyAudio ? 1 : 0) . " vol=" . CFG.hotkeyAudioVolume
+             . " freqMode=" . CFG.hotkeyFreqMode . " from " . _ConfigPath())
+    }
 }
 
 ; One‑shot startup warmup: resolve and cache Overwolf/Firestone paths.
@@ -8339,7 +10429,13 @@ StartOWCreateHook()
 ; Firestone loading suppression, so a loading window appearing BEFORE the first
 ; F2 (or right after a too-quick F2) is caught instead of flashing on primary.
 ; No-op when no loading popup exists. F2 still arms the fast 10ms instance.
-SetTimer(SuppressFirestoneLoadingTick, 100)
+;
+; FIRESTONE IS OPTIONAL. Nothing below is armed on a machine with no Overwolf
+; and no Firestone install: these timers exist solely to manage Firestone's
+; windows, and on such a machine they would poll an empty window list forever.
+; The check is a cached path lookup, so it costs one filesystem probe.
+if FirestoneInstalled()
+    SetTimer(SuppressFirestoneLoadingTick, 100)
 
 ; Deferred 3s: warm PowerShell once after startup settles.
 SetTimer(PrewarmRules, -3000)
@@ -8356,6 +10452,28 @@ PrewarmRules() {
 ; fires even when DirectInput/fullscreen mode swallows the window message.
 SetTimer(F4Watchdog, 500)
 
+; Build the hotkey notes if HSBG.ini turned them on. Deferred off the start-up
+; path: generating four waveforms takes about a second, and a hotkey pressed in
+; that second must not wait for it -- a press before they exist builds them on
+; the spot and falls back to a plain beep, so it is never silent.
+;
+; Logged either way. If the sound was switched on and nothing was heard, this
+; line is the first thing to check: it says whether the script saw the setting
+; at all, which separates "the audio failed" from "the file you edited is not
+; the file the script read".
+if CFG.hotkeyAudio {
+    _FSLog("AUDIO enabled in config -- building notes shortly")
+    SetTimer(EnsureHotkeyTones, -1200)
+} else {
+    _FSLog("AUDIO disabled (HotkeyAudio=0 in " . _ConfigPath() . ")")
+}
+
+; Hotkey watchdog: releases a system modifier the OS is reporting as held while
+; nothing is being typed. That state makes all four F-keys inert with no
+; visible symptom, so this is the one timer whose job is to keep the script
+; reachable at all. See HK_NoSysMods.
+SetTimer(HK_ReachabilityWatchdog, CFG.hkWatchdogPollMs)
+
 ; Qt‑helper janitor: keeps Battle.net's hidden helper windows hidden.
 SetTimer(QtHelperJanitor, 2000)
 
@@ -8370,7 +10488,17 @@ StartMonitorLock()
 ; 1ms suppression burst and runs the first sweep. Without this call a Firestone
 ; that was already running when the script started stayed visible until the
 ; first F2/F3. Now FS-Main and FS-Battlegrounds are hidden from startup.
-LockFirestoneMain()
+;
+; Skipped entirely when Firestone is not installed -- LockFirestoneMain arms
+; the 50ms coast sweep, and there is nothing for it to sweep.
+if FirestoneInstalled() {
+    LockFirestoneMain()
+    StartFSNotifSweeper()   ; starts the popup closer immediately
+} else {
+    _FSLog("STARTUP no Overwolf/Firestone install detected -- Firestone"
+         . " subsystems stay dormant. F1, F2 and F4 work normally; F3 has"
+         . " nothing to toggle")
+}
 
 ; ── LOAD STAMP ────────────────────────────────────────────────────────────────
 ; A distinct rising 3-note chord the instant THIS build finishes loading.
