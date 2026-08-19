@@ -1,6 +1,6 @@
 # HSBG — Hearthstone Battlegrounds Session Manager
 
-An AutoHotkey v2 automation layer that manages a complete Hearthstone Battlegrounds session: it sequences the four applications involved, keeps every window on the monitor you started it from, and shows you only the surfaces you actually want to see.
+An AutoHotkey v2 automation layer that manages a complete Hearthstone Battlegrounds session with a manageable features in the included config file: F1- Combat Skip without closing HSBG. F2- Cold launches Firestone & Hearthstone, as well as quick restarts you back into the game if used while HS is open., F3- Manages Firestone Mian and Firestone Battlegrounds, keeping them minimized and hidden away till you unlock and pull them back, F4 closes everything, overwolf, firestone, hearthstone and the script itself. F2 to open the game, and manage and hide all unwanted clutter that comes with programs like firestone and overwolf, F1 to skip the combat, F3 to pull up the Firestone programs when you want access to it, other wise keeping it away, the whole time the overlay is active and squared away, F2 to restart if you skipped combat but you died, and F4 to close it all up when it's time to sleep. A Full automated setup, that makes the game much more smooth and enjoyable. Also works if you do not have firestone, and just want a perfected combat skip. 
 
 **Requirements:** Windows 10/11 · [AutoHotkey v2.0](https://www.autohotkey.com/) · Administrator privileges
 
