@@ -1,8 +1,4 @@
 HSBG — Hearthstone Battlegrounds Session Manager
-https://img.shields.io/badge/platform-Windows%252010%252F11-blue
-https://img.shields.io/badge/AutoHotkey-v2.0-green
-https://img.shields.io/badge/status-production--ready-brightgreen
-
 One keypress. Clean lobby. Overlay ready. Combat skipped.
 
 HSBG is an AutoHotkey v2 automation layer that manages a complete Hearthstone Battlegrounds session. It launches, restarts, and shuts down every application involved, keeps companion tools out of the way until you need them, and skips combat animations without closing the game.
