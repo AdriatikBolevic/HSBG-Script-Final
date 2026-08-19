@@ -1,0 +1,66 @@
+2026-08-19 15:20:39 CONFIG read C:\Users\Adriatik Bolevic\Downloads\HSBG Final\HSBG Config.ini -- MonitorLock=1 HotkeyAudio=0 Volume=25 SoundFile= FreqMode=singular
+2026-08-19 15:20:41 CONFIG read C:\Users\Adriatik Bolevic\Downloads\HSBG Final\HSBG Config.ini -- MonitorLock=1 HotkeyAudio=0 Volume=25 SoundFile= FreqMode=singular
+2026-08-19 15:20:41 STARTUP v9.0 settings in force: MonitorLock=1 HotkeyAudio=0 vol=25 freqMode=singular from C:\Users\Adriatik Bolevic\Downloads\HSBG Final\HSBG Config.ini
+2026-08-19 15:20:42 AUDIO disabled (HotkeyAudio=0 in C:\Users\Adriatik Bolevic\Downloads\HSBG Final\HSBG Config.ini)
+2026-08-19 15:20:42 HS-MONITOR-PREF UnitySelectMonitor=1 (chosen mon 2)
+2026-08-19 15:20:44 FS-LAUNCH immediate (fsLaunchDelayMs=0)
+2026-08-19 15:20:45 HS-MONITOR-PREF UnitySelectMonitor=1 (chosen mon 2)
+2026-08-19 15:20:45 FS-SURFACE suppressed exe=Overwolf.exe class=HwndWrapper[Overwolf.exe;;71128e2a-1b60-4998-9b77-343184301a31] title="SystemResourceNotifyWindow" size=0x0
+2026-08-19 15:20:45 FS-COLD born title="SystemResourceNotifyWindow" policy=park
+2026-08-19 15:20:45 FS-SURFACE suppressed exe=Overwolf.exe class=HwndWrapper[Overwolf.exe;;9149000d-2842-4bbf-a53f-95713909f798] title="" size=136x39
+2026-08-19 15:20:46 FS-SURFACE suppressed exe=Overwolf.exe class=.NET-BroadcastEventWindow.4.0.0.0.bce5ad.0 title=".NET-BroadcastEventWindow.4.0.0.0.bce5ad.0" size=0x0
+2026-08-19 15:20:46 FS-COLD born title=".NET-BroadcastEventWindow.4.0.0.0.bce5ad.0" policy=park
+2026-08-19 15:20:47 FS-COLD born title="Overwolf IPTCKW" policy=park
+2026-08-19 15:20:47 FS-SURFACE suppressed exe=Overwolf.exe class=GDI+ Hook Window Class title="GDI+ Window (Overwolf.exe)" size=1x1
+2026-08-19 15:20:47 FS-COLD born title="GDI+ Window (Overwolf.exe)" policy=park
+2026-08-19 15:20:47 FS-SURFACE suppressed exe=Overwolf.exe class=WindowsForms10.Window.8.app.0.bce5ad_r14_ad1 title="Overwolf IPTCKW" size=160x28
+2026-08-19 15:20:47 FS-SURFACE suppressed exe=OverwolfBrowser.exe class=crashpad_SessionEndWatcher title="" size=136x39
+2026-08-19 15:20:48 FS-SURFACE suppressed exe=Overwolf.exe class=Base_PowerMessageWindow title="" size=0x0
+2026-08-19 15:20:48 FS-SURFACE suppressed exe=Overwolf.exe class=Chrome_WidgetWin_0 title="" size=1920x1023
+2026-08-19 15:20:49 FS-SURFACE suppressed exe=Overwolf.exe class=HwndWrapper[Overwolf.exe;UI;99df169d-5142-46d0-bf46-fed301b07c7d] title="MediaContextNotificationWindow" size=0x0
+2026-08-19 15:20:49 FS-COLD born title="MediaContextNotificationWindow" policy=park
+2026-08-19 15:20:49 FS-SURFACE suppressed exe=Overwolf.exe class=HwndWrapper[Overwolf.exe;UI;540b6689-15be-494c-8de3-2e064a792921] title="" size=136x39
+2026-08-19 15:20:49 FS-SURFACE suppressed exe=Overwolf.exe class=HwndWrapper[Overwolf.exe;UI;86d7651e-c4d4-40d2-a304-4ed5eac5ef6d] title="Overwolf Quick Launcher" size=14x14
+2026-08-19 15:20:49 FS-COLD born title="Overwolf Quick Launcher" policy=park
+2026-08-19 15:20:49 FS-SURFACE suppressed exe=Overwolf.exe class=HwndWrapper[Overwolf.exe;UI;b36040b1-a149-4d60-9163-62006c6fb868] title="Hidden Window" size=1920x1023
+2026-08-19 15:20:49 FS-COLD born title="Hidden Window" policy=park
+2026-08-19 15:20:51 FS-SURFACE suppressed exe=OverwolfHelper.exe class=Overwolf.WatchDock title="Overwolf.WatchDock" size=136x39
+2026-08-19 15:20:51 FS-COLD born title="Overwolf.WatchDock" policy=park
+2026-08-19 15:20:51 FS-SURFACE suppressed exe=Overwolf.exe class=clsOWServer title="OverWolf Server" size=400x400
+2026-08-19 15:20:51 FS-COLD born title="OverWolf Server" policy=park
+2026-08-19 15:20:51 FS-SURFACE suppressed exe=Overwolf.exe class=WindowsForms10.Window.0.app.0.bce5ad_r14_ad1 title="" size=136x39
+2026-08-19 15:20:51 FS-SURFACE suppressed exe=Overwolf.exe class=HwndWrapper[Overwolf.exe;UI;71b7991e-0957-45af-98a0-dc989d48cf6f] title="Hidden Window" size=1920x1023
+2026-08-19 15:20:51 FS-COLD born title="Hidden Window" policy=park
+2026-08-19 15:20:51 FS-SURFACE kept-hidden exe=Overwolf.exe class=HwndWrapper[Overwolf.exe;UI;86d7651e-c4d4-40d2-a304-4ed5eac5ef6d] title="Overwolf Quick Launcher" size=14x14
+2026-08-19 15:20:51 FS-SURFACE kept-hidden exe=Overwolf.exe class=MSCTFComposition title="" size=0x0
+2026-08-19 15:20:52 FS-SURFACE kept-hidden exe=Overwolf.exe class=HwndWrapper[Overwolf.exe;UI;726be193-315b-483b-a4df-71d9434689b3] title="Overwolf" size=14x14
+2026-08-19 15:20:53 FS-SURFACE suppressed exe=Overwolf.exe class=WindowsForms10.Window.8.app.0.bce5ad_r14_ad1 title="" size=1440x790
+2026-08-19 15:20:53 FS-SURFACE suppressed exe=Overwolf.exe class=WindowsForms10.Window.8.app.0.bce5ad_r14_ad1 title="Firestone" size=1456x923
+2026-08-19 15:20:53 FS-COLD born title="Firestone" policy=park
+2026-08-19 15:20:53 FS-VISIBLE unconcealed Firestone window hwnd=2361170 title="Firestone" size=1456x923 ex=0xD0100 style=0x16C70000 locked=1 -- this window should have been concealed and was not
+2026-08-19 15:20:54 FS-PAINT PROVEN after 1078ms title="Firestone - Main" distinct=366 policy=park -- switching to the Battlegrounds exit (cloak + single SW_HIDE)
+2026-08-19 15:20:55 FS-SURFACE kept-hidden exe=Overwolf.exe class=WindowsForms10.Window.8.app.0.bce5ad_r14_ad1 title="Firestone - Main" size=1456x923
+2026-08-19 15:20:55 FS-SURFACE kept-hidden exe=Overwolf.exe class=Chrome_WidgetWin_1 title="" size=1456x923
+2026-08-19 15:20:55 FS-SURFACE kept-hidden exe=Overwolf.exe class=WindowsForms10.Window.8.app.0.bce5ad_r14_ad1 title="" size=1456x923
+2026-08-19 15:20:55 FS-SURFACE kept-hidden exe=Overwolf.exe class=CefBrowserWindow title="CollectionWindow" size=1456x923
+2026-08-19 15:20:55 FS-SURFACE kept-hidden exe=Overwolf.exe class=Chrome_RenderWidgetHostHWND title="Chrome Legacy Window" size=1456x923
+2026-08-19 15:20:55 FS-SURFACE kept-hidden exe=OverwolfBrowser.exe class=Intermediate D3D Window title="" size=1456x923
+2026-08-19 15:21:05 FS-PAINT no reading after 20016ms title="SystemResourceNotifyWindow" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:05 FS-PAINT no reading after 20047ms title="" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:06 FS-PAINT no reading after 20062ms title=".NET-BroadcastEventWindow.4.0.0.0.bce5ad.0" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:07 FS-PAINT no reading after 20015ms title="Overwolf IPTCKW" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:07 FS-PAINT no reading after 20063ms title="GDI+ Window (Overwolf.exe)" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:07 FS-PAINT no reading after 20031ms title="" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:08 FS-PAINT no reading after 20031ms title="" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:08 FS-PAINT no reading after 20047ms title="" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:09 FS-PAINT no reading after 20015ms title="Hidden Window" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:09 FS-PAINT no reading after 20015ms title="MediaContextNotificationWindow" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:09 FS-PAINT no reading after 20015ms title="" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:10 FS-PAINT no reading after 20031ms title="" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:10 FS-PAINT no reading after 20047ms title="Hidden Window" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:10 FS-PAINT no reading after 20063ms title="OverWolf Server" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:11 FS-PAINT no reading after 20031ms title="Overwolf.WatchDock" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:12 FS-PAINT no reading after 20063ms title="" policy=park -- probing stopped, window STAYS parked and invisible; the verdict is deferred to the next F3 reveal
+2026-08-19 15:21:45 FS-HEALTH Firestone is running
+2026-08-19 15:21:54 CONFIG read C:\Users\Adriatik Bolevic\Downloads\HSBG Final\HSBG Config.ini -- MonitorLock=1 HotkeyAudio=0 Volume=25 SoundFile= FreqMode=singular
+2026-08-19 15:21:56 CONFIG read C:\Users\Adriatik Bolevic\Downloads\HSBG Final\HSBG Config.ini -- MonitorLock=1 HotkeyAudio=0 Volume=25 SoundFile= FreqMode=singular

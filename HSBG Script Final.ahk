@@ -172,7 +172,7 @@
 ; DIAGNOSTICS
 ; ------------------------------------------------------------------------------
 ; With CFG.f1DebugLog enabled the script appends a single line per significant
-; event to %TEMP%\hs_bg_f1.log — launch sequencing, Firestone paint detection,
+; event to HSBG.log (next to the script) — launch sequencing, Firestone paint detection,
 ; window classification decisions and every window it closes. One launch is
 ; normally enough to explain any unexpected behaviour.
 ;
@@ -218,6 +218,37 @@
 global HSBG_BUILD := "v9.0"
 #SingleInstance Force
 
+; ── THREAD SETTINGS: the single largest source of sluggishness in this script ─
+;
+; AutoHotkey v2 sleeps 100 ms after EVERY WinMove, WinShow, WinHide,
+; WinActivate and WinSetTransparent, by default, on the script's only thread.
+; That default is invisible in the source -- the delay is not written anywhere
+; -- and it is catastrophic here, because this script drives windows from
+; timers rather than from a linear script.
+;
+; The worst case was HideOverwolfLauncher: a 10 ms timer calling
+; WinSetTransparent, so every tick paid 100 ms of enforced sleep and the
+; entire script -- hotkeys included -- was blocked for roughly 90% of the
+; launch window. That is what "F2 is slow", "it stalls and then fails" and
+; "the hotkeys did not respond" all were. The monitor lock paid the same
+; 100 ms per window it corrected; F3's reveal paid it per WinActivate.
+;
+; -1 means no sleep at all, not even a yield. It is safe here because nothing
+; in this script reads a window's state on the line after changing it -- every
+; sequence that has to wait for a window waits explicitly, on a timer, with a
+; condition it actually checks. The 100 ms was never doing anything but
+; costing.
+SetWinDelay(-1)
+SetControlDelay(-1)
+
+; Two recorders that exist for debugging and cost real time in a script with
+; timers this hot. ListLines writes an entry for every line executed; with the
+; sweeps running at 10-50 ms that is tens of thousands of entries a second, all
+; of it discarded. KeyHistory is the same for keystrokes. Neither is used for
+; diagnostics here -- the log file is (see _LogPath) -- so both are off.
+ListLines False
+KeyHistory 0
+
 ; ==============================================================================
 ; SECTION 1: CONFIGURATION
 ; ==============================================================================
@@ -253,7 +284,7 @@ global CFG := {
     ; playing and usually belong on a different screen from the game.
     lockWindowsToChosenMonitor: true,
 
-    ; ── THESE TWO ARE DRIVEN BY HSBG.ini ────────────────────────────────────
+    ; ── THESE TWO ARE DRIVEN BY HSBG Config.ini ────────────────────────────────────
     ; The values here are the FALLBACKS used when no settings file is present.
     ; HSBG Config.ini sits next to this script, is created automatically on first run,
     ; and overrides both at start-up. Edit the .ini, not this -- the whole point
@@ -313,12 +344,18 @@ global CFG := {
                                        ; port is NOT a servicesPort. Fill only if auto
                                        ; ever grabs the wrong connection.
     f1DebugLog:              true,     ; true = append one line per F1 press to
-                                       ; %TEMP%\hs_bg_f1.log (connections found, the
+                                       ; HSBG.log (next to the script) (connections found, the
                                        ; IP(s) blocked, hold window). If a press ever
                                        ; fails to disconnect, this line says whether
                                        ; the game IP was even identified — the one
                                        ; question that matters for tuning gamePorts.
-    forcefulHoldMs:          2500,     ; F1 blackout CEILING. The block is now
+    forcefulHoldMs:          1500,     ; F1 blackout CEILING. WAS 2500, which is
+                                       ; longer than the skip needs and long
+                                       ; enough for a slow reconnect to fail
+                                       ; outright rather than resume. The client
+                                       ; registers the drop in a few hundred ms;
+                                       ; everything after that is dead air.
+                                       ; The block is now
                                        ; ADAPTIVE: it lifts the moment HS has
                                        ; verifiably abandoned the connection
                                        ; (no ESTABLISHED socket to a blocked
@@ -375,9 +412,12 @@ global CFG := {
                                        ;             but drops EVERYTHING incl. auth —
                                        ;             use only if "ipblock" somehow
                                        ;             doesn't drop on your machine.
-    f1AdapterHoldMs:         3000,     ; blackout for "adapter" mode -- matched to the
-                                       ; 3-second F1 disconnect duration so both F1
-                                       ; methods produce the same downtime.
+    f1AdapterHoldMs:         2000,     ; blackout for "adapter" mode. Deliberately
+                                       ; a little longer than forcefulHoldMs: an
+                                       ; adapter down/up costs the OS time the
+                                       ; firewall path does not, so this is what
+                                       ; makes both F1 methods produce roughly the
+                                       ; same felt downtime. Moves with it.
     loginFallbackAfterMs:    50000,
 
     ; ── Battle.net launch hiding ─────────────────────────────────────────────
@@ -449,7 +489,7 @@ global CFG := {
     fsLogUnclassified:       true,     ; append one line per NEW (exe|class|
                                        ; title|size) Overwolf surface the
                                        ; script decides about, to
-                                       ; %TEMP%\hs_bg_f1.log. One line per
+                                       ; HSBG.log (next to the script). One line per
                                        ; distinct signature per session, so it
                                        ; cannot spam. This is how we identify
                                        ; any window that still escapes: the log
@@ -649,7 +689,20 @@ global CFG := {
     ; the whole script read as "barely working". The 1 ms rate is only actually
     ; needed while windows are being BORN (a launch, or a fresh F3 lock); the
     ; rest of the time it is a pure watchdog. So the burst now DECAYS.
-    fsBurstMs:               1,        ; sweep interval while bursting
+    fsBurstMs:               10,       ; sweep interval while bursting.
+                                       ; WAS 1. A 1ms sweep enumerates every
+                                       ; Overwolf window and reads every title
+                                       ; about a thousand times a second, on a
+                                       ; single-threaded script that was also
+                                       ; running at raised process priority.
+                                       ; That is the choppiness -- it competes
+                                       ; with the game for the same CPU.
+                                       ;
+                                       ; It costs nothing to slow down: newborn
+                                       ; windows are caught by the window EVENT
+                                       ; HOOK at creation, not by this sweep.
+                                       ; The sweep is the backstop, and 10ms is
+                                       ; still under one frame at 60Hz.
     fsCoastMs:               50,       ; sweep interval once the burst decays.
                                        ; Still well under one frame at 60Hz, so
                                        ; steady-state suppression is unchanged.
@@ -657,6 +710,31 @@ global CFG := {
                                        ; to the coast rate. Re-armed by every
                                        ; LockFirestoneMain / F2, so a launch
                                        ; always gets a fresh full-speed window.
+    fsSettledMs:             250,      ; THE RATE YOU ACTUALLY PLAY AT.
+                                       ;
+                                       ; Once Firestone Main has opened and the
+                                       ; launch pipeline is finished, nothing
+                                       ; new is being created -- so the 50ms
+                                       ; coast is 20 full window enumerations a
+                                       ; second, forever, to discover that
+                                       ; nothing has changed. Each one resolves
+                                       ; a process name per top-level window on
+                                       ; the desktop, and it runs for the whole
+                                       ; session, next to the game.
+                                       ;
+                                       ; This is the third tier: burst while
+                                       ; windows are being born, coast while the
+                                       ; launch settles, then back right off.
+                                       ; The event hook still fires instantly on
+                                       ; creation, show, name-change and
+                                       ; uncloak, so nothing waits on this
+                                       ; sweep -- it is a backstop for the case
+                                       ; where the hook missed something, and a
+                                       ; backstop does not need 20Hz.
+                                       ;
+                                       ; A new launch re-arms the burst, so this
+                                       ; only ever applies to a settled session.
+                                       ; Set equal to fsCoastMs to disable.
 
     bnetMinimizeCeilingMs:   60000,
 
@@ -671,12 +749,12 @@ global CFG := {
                                        ; satisfy it, and a launch that never
                                        ; happens is far worse than one that
                                        ; happens a moment early.
-    bnetRevealDwellMs:       1200,      ; minimum on-screen time for the launcher
+    bnetRevealDwellMs:       500,      ; minimum on-screen time for the launcher
                                        ; before the Play command may fire. This
                                        ; is a floor, not a wait: it only stops
                                        ; the window flashing past. Raise it if
                                        ; you want a longer look at the launcher.
-    bnetPostPlayLingerMs:    1250,     ; gap between Play firing and the launcher
+    bnetPostPlayLingerMs:    1000,     ; gap between Play firing and the launcher
                                        ; minimizing. Anchored to the COMMAND, not
                                        ; to Hearthstone's process, which is what
                                        ; lets the launcher leave first.
@@ -713,9 +791,21 @@ global CFG := {
                                        ; moment the launcher minimizes or Hearthstone is
                                        ; revealed, so it never floats over the game.
                                        ; false = place it, but leave the z-order alone.
-    loginDetectMinRetries:   25,       ; ticks before first BNet login‑screen check (~5s)
-    loginFallbackMinRetries: 25,       ; ticks before entering LOGIN_WAIT fallback
-    hammerFastMs:            200,      ; LaunchStateMachine tick interval (fast phase)
+    ; THESE TWO ARE COUNTED IN TICKS, NOT MILLISECONDS, so they are tied to
+    ; hammerFastMs below. When that was halved from 200ms to 100ms these were
+    ; doubled to match: 50 ticks x 100ms is the same ~5 seconds 25 ticks x 200ms
+    ; used to be. Left at 25 they would have halved the grace period a cold
+    ; Battle.net gets to finish auto-login before the script decides it is
+    ; looking at a login screen -- and deciding that wrongly un-hides the
+    ; launcher, foregrounds it and stops the launch hammer, which is a visible
+    ; two-second regression on a launch that needed no interaction at all.
+    loginDetectMinRetries:   50,       ; ticks before first BNet login‑screen check (~5s)
+    loginFallbackMinRetries: 50,       ; ticks before entering LOGIN_WAIT fallback
+    hammerFastMs:            100,      ; LaunchStateMachine tick interval (fast phase).
+                                       ; Halved from 200: this is the granularity
+                                       ; at which Play can fire, so it is also the
+                                       ; jitter in how long the launcher sits on
+                                       ; screen before it does.
     hammerSlowMs:            500,      ; LaunchStateMachine tick interval (login‑wait phase)
     launchHudWatchMs:        400,      ; LaunchHudWatchdog poll interval
 
@@ -753,7 +843,7 @@ global CFG := {
     hkWatchdogPollMs:        2000,     ; how often that check runs.
 
     ; ── Performance / smoothness tweaks (set false to disable) ──────────────
-    scriptAboveNormalPriority: true,    ; true = run this script itself at AboveNormal
+    scriptAboveNormalPriority: false,   ; true = run this script itself at AboveNormal
                                        ; priority for more consistent F1/F3 timer
                                        ; response. Set false if you notice gameplay
                                        ; micro‑stutter (trades timer consistency for
@@ -821,7 +911,7 @@ global CFG := {
 }
 
 ; ══════════════════════════════════════════════════════════════════════════════
-;  EXTERNAL SETTINGS FILE — HSBG.ini
+;  EXTERNAL SETTINGS FILE — HSBG Config.ini
 ; ══════════════════════════════════════════════════════════════════════════════
 ; Applied immediately after CFG is built and before anything reads it.
 ;
@@ -842,7 +932,7 @@ global CFG := {
 ; the log.
 LoadUserConfig()
 
-; Where HSBG.ini lives. Resolved once, then cached.
+; Where HSBG Config.ini lives. Resolved once, then cached.
 ;
 ; THE SCRIPT'S OWN FOLDER IS NOT ALWAYS A PLACE THE USER CAN WRITE.
 ; This script runs ELEVATED. A file it creates next to itself inherits that
@@ -855,12 +945,12 @@ LoadUserConfig()
 ;
 ; So the folder is CHOSEN by testing it, not assumed:
 ;
-;   1. An HSBG.ini already sitting next to the script wins. That is portable
+;   1. An HSBG Config.ini already sitting next to the script wins. That is portable
 ;      mode -- a USB stick, a git checkout -- and whoever put it there meant it.
 ;   2. Otherwise, if the script's own folder is genuinely writable, use it.
 ;      That is the friendliest place: the settings sit with the thing they
 ;      configure.
-;   3. Otherwise %APPDATA%\HSBG\HSBG.ini, which a user can always write to
+;   3. Otherwise %APPDATA%\HSBG\HSBG Config.ini, which a user can always write to
 ;      without elevation, by definition.
 ;
 ; Whichever wins is logged at start-up and shown in the tray menu, so there is
@@ -874,11 +964,69 @@ LoadUserConfig()
 ; moment this function first ran, the variable did not exist yet. Reading an
 ; unset variable throws in AutoHotkey v2, the throw was caught by the blanket
 ; try in LoadUserConfig, and the entire settings file was silently ignored.
-; Edit HSBG.ini, restart, nothing changes, no error, no log line.
+; Edit HSBG Config.ini, restart, nothing changes, no error, no log line.
 ;
 ; A static initializes on first call, so it cannot be outrun by the order of
 ; statements in the file. Nothing here may depend on where in the script it
 ; happens to sit.
+; Where the log is written: NEXT TO THE SCRIPT, not in %TEMP%.
+;
+; A log nobody can find is not a diagnostic, it is a rumour. It used to go to
+; %TEMP%, which means asking a user to paste a path into an address bar before
+; they can tell you anything -- and %TEMP% is periodically swept by Windows, so
+; the file could simply be gone by the time anyone looked.
+;
+; Same folder as the script, same name every time: HSBG.log. Falls back to the
+; settings folder, and then to %TEMP%, only if the script's own folder cannot
+; be written to (an elevated script in a protected directory) -- because a log
+; SOMEWHERE beats no log at all.
+_LogPath() {
+    static cached := ""
+    if (cached != "")
+        return cached
+    beside := A_ScriptDir . "\HSBG.log"
+    if _DirIsWritable(A_ScriptDir) {
+        cached := beside
+        _TrimLog(cached)
+        return cached
+    }
+    try {
+        dir := A_AppData . "\HSBG"
+        if !DirExist(dir)
+            DirCreate(dir)
+        if DirExist(dir) {
+            cached := dir . "\HSBG.log"
+            _TrimLog(cached)
+            return cached
+        }
+    }
+    cached := A_Temp . "\HSBG.log"
+    _TrimLog(cached)
+    return cached
+}
+
+; Keep one previous log, cap the live one.
+;
+; This matters more now that the file lives in the user's own folder instead of
+; %TEMP%: Windows sweeps %TEMP% and never sweeps a Downloads folder, so an
+; append-only log next to the script would grow without limit forever and the
+; script would be the thing that filled someone's disk. Runs once, when the path
+; is first resolved -- i.e. at most once per session.
+;
+; Rolling rather than deleting keeps the previous session available, which is
+; usually the one being asked about ("it did it last time I played").
+_TrimLog(path) {
+    static kMaxBytes := 2097152   ; 2 MB — thousands of launches
+    try {
+        if (!FileExist(path) || FileGetSize(path) < kMaxBytes)
+            return
+        prev := path . ".1"
+        if FileExist(prev)
+            FileDelete(prev)
+        FileMove(path, prev, true)
+    }
+}
+
 _ConfigPath() {
     static cached := ""
     if (cached != "")
@@ -1427,7 +1575,7 @@ GetChosenMonitorBounds(&l, &t, &w, &h) {
 ; ══════════════════════════════════════════════════════════════════════════════
 ;  HOTKEY TONES — a deep guitar note per key
 ; ══════════════════════════════════════════════════════════════════════════════
-; Off by default; switched on with HotkeyAudio=1 in HSBG.ini.
+; Off by default; switched on with HotkeyAudio=1 in HSBG Config.ini.
 ;
 ; WHY THESE ARE SYNTHESISED RATHER THAN BEEPED. SoundBeep drives the system beep
 ; with a square wave: it is thin, piercing, and at the low frequencies wanted
@@ -2724,26 +2872,83 @@ _HSProgramScope() {
     return ' program="' . p . '"'
 }
 
+; ── WHY THIS RUNS TWO PROCESSES AT ONCE ──────────────────────────────────────
+;
+; netsh is slow. A single `advfirewall firewall add rule` typically costs
+; 200-500 ms and can exceed a second on a machine with a large rule set, and
+; RunWait blocks this script's only thread for the whole of it.
+;
+; The original shape of an F1 press ran EIGHT of them: two to pre-clean, two to
+; add, two to delete on release, and two more from the `finally` that deleted
+; again. Around three seconds of process launches wrapped around a 1500 ms
+; hold -- most of it before the block was even in place, which is the part the
+; user feels as "F1 takes a while to do anything".
+;
+; Three changes, none of which weaken the guarantee that a block is always
+; released:
+;
+;   1. The pre-clean and the second delete are gone, because RemoveIPBlock now
+;      knows whether any rule can possibly exist and returns immediately when
+;      none can. Correctness is unchanged: the startup and exit janitors force
+;      a real delete, so a rule stranded by a crash is still swept.
+;   2. The IN rule is launched with Run and the OUT rule with RunWait, so the
+;      two netsh processes run concurrently and the pair costs roughly what one
+;      used to. The delete pair is overlapped the same way.
+;   3. _ipBlockOn is set BEFORE the first add rather than after the last one.
+;      It means "rules may exist" rather than "rules definitely exist", so a
+;      thread that dies mid-add still leaves every cleanup path armed.
+;
+; The OUT rule keeps its exit code, and that is what success is judged on. The
+; two commands differ only by `dir=`, so anything that fails one -- bad syntax,
+; lost elevation, a firewall service that is not running -- fails both.
 ApplyIPBlock(ipsCsv) {
     global CFG, _ipBlockOn
     if (ipsCsv = "")
         return false
-    RemoveIPBlock()   ; idempotence — never stack duplicate rules
+    RemoveIPBlock()   ; idempotence — no-op unless rules may already exist
     n     := CFG.ruleName
     scope := _HSProgramScope()
+
+    _ipBlockOn := true   ; from here on, cleanup must run for real
+
+    pidIn := 0
+    try Run('netsh advfirewall firewall add rule name="' . n . '_IP_IN" dir=in action=block remoteip=' . ipsCsv . scope . ' enable=yes profile=any', , "Hide", &pidIn)
     ec1 := RunWait('netsh advfirewall firewall add rule name="' . n . '_IP_OUT" dir=out action=block remoteip=' . ipsCsv . scope . ' enable=yes profile=any', , "Hide")
-    ec2 := RunWait('netsh advfirewall firewall add rule name="' . n . '_IP_IN" dir=in action=block remoteip=' . ipsCsv . scope . ' enable=yes profile=any', , "Hide")
-    _ipBlockOn := (ec1 == 0 && ec2 == 0)
-    if !_ipBlockOn
-        RemoveIPBlock()   ; half‑applied is worse than not applied
-    return _ipBlockOn
+    if pidIn
+        try ProcessWaitClose(pidIn, 5)
+
+    if (ec1 != 0) {
+        RemoveIPBlock(true)   ; half‑applied is worse than not applied
+        return false
+    }
+
+    ; RE-ASSERT, and this line is load-bearing.
+    ;
+    ; The two waits above are interruptible: AutoHotkey runs timers and other
+    ; hotkey threads while RunWait and ProcessWaitClose block. F2's restart path
+    ; calls RemoveIPBlock, and F1/F2 are adjacent keys -- so an F2 landing in
+    ; the half-second the adds take would clear _ipBlockOn, the adds would then
+    ; commit, and every later release would see a false flag and skip the
+    ; delete. The rule would stay on the machine, blocking the game's server,
+    ; for the rest of the session.
+    _ipBlockOn := true
+    return true
 }
 
-RemoveIPBlock() {
+; force=true means "delete regardless of what the flag says". Used by the
+; start-up and exit janitors, which run precisely when the flag is untrustworthy
+; -- a previous instance that crashed mid-hold left rules behind and no state at
+; all. Every other caller passes nothing and gets the fast path.
+RemoveIPBlock(force := false) {
     global CFG, _ipBlockOn
+    if (!_ipBlockOn && !force)
+        return
     n := CFG.ruleName
-    RunWait('netsh advfirewall firewall delete rule name="' . n . '_IP_OUT"', , "Hide")
+    pidOut := 0
+    try Run('netsh advfirewall firewall delete rule name="' . n . '_IP_OUT"', , "Hide", &pidOut)
     RunWait('netsh advfirewall firewall delete rule name="' . n . '_IP_IN"',  , "Hide")
+    if pidOut
+        try ProcessWaitClose(pidOut, 5)
     _ipBlockOn := false
 }
 
@@ -2775,7 +2980,7 @@ _F1AdapterReset(holdMs) {
 ; names from previous F1 designs.
 DeleteGameRule() {
     global CFG
-    RemoveIPBlock()
+    RemoveIPBlock(true)   ; janitor: delete whatever is there, flag or no flag
     for suffix in ["_GAME_OUT", "_V6_OUT", "_FULL_OUT"]
         RunWait('netsh advfirewall firewall delete rule name="' . CFG.ruleName . suffix . '"', , "Hide")
 }
@@ -3255,7 +3460,13 @@ HideOverwolfLauncher() {
                 CloakWindow(hwnd)
                 if DllCall("user32\IsWindowVisible", "Ptr", hwnd)
                     DllCall("ShowWindow", "Ptr", hwnd, "Int", 0)
-                WinSetTransparent(0, "ahk_id " . hwnd)
+                ; Only if it is not already zero. Re-applying the same alpha
+                ; every 10 ms adds and re-adds WS_EX_LAYERED and forces a DWM
+                ; update for no change; the window is already invisible.
+                alpha := ""
+                try alpha := WinGetTransparent("ahk_id " . hwnd)
+                if (alpha != 0)
+                    WinSetTransparent(0, "ahk_id " . hwnd)
             }
         }
     }
@@ -4073,8 +4284,37 @@ _FSLogVisibleSurface(hwnd) {
     }
 }
 
+; Is any Overwolf process alive? Cached for a second.
+;
+; ProcessExist snapshots the entire system process table. The sweeps below run
+; at 10-20Hz for the whole session, and on a machine where Overwolf is not
+; running -- before the first F2, after F4, or for someone who has Firestone
+; installed but not open -- every one of those ticks was enumerating every
+; top-level window on the desktop and resolving a process name for each, to
+; discover there was nothing to do. One second of staleness costs nothing: the
+; launch path arms its own fast instance directly rather than waiting for this.
+_OverwolfRunningCached(bust := false) {
+    static primed := false, last := 0, val := false
+    if bust {
+        primed := false
+        return val
+    }
+    if (primed && A_TickCount - last < 1000)
+        return val
+    primed := true
+    last   := A_TickCount
+    ; Every executable the sweeps this guards actually enumerate --
+    ; CFG.fsFamilyExes plus the launcher's own splash process. A name missing
+    ; here would silently switch off suppression for the windows that name owns.
+    val := (ProcessExist("Overwolf.exe")       || ProcessExist("OverwolfBrowser.exe")
+         || ProcessExist("OverwolfHelper.exe") || ProcessExist("OverwolfLauncher.exe"))
+    return val
+}
+
 SuppressFirestoneLoadingTick() {
     global State, _fsHiddenByUs, _fsOWFirstSeen
+    if !_OverwolfRunningCached()
+        return
     prev     := A_DetectHiddenWindows
     prevMode := A_TitleMatchMode
     DetectHiddenWindows true
@@ -4252,7 +4492,7 @@ _LogFSSurface(hwnd, title, decision) {
             . " FS-SURFACE " . decision
             . " exe=" . exe . " class=" . cls
             . " title=`"" . title . "`" size=" . w . "x" . h . "`n"
-            , A_Temp . "\hs_bg_f1.log")
+            , _LogPath())
     }
 }
 
@@ -4315,10 +4555,12 @@ _FSMainWindowPresent(excludeHwnd := 0) {
     return found
 }
 
-global _fsPopupKilled    := Map()
+global _fsPopupKilled    := Map()
+
 global _fsPopupFirstSeen := Map()   ; hwnd -> first sighting, for the grace
 _FSKillNotificationPopup(hwnd, why) {
-    global _fsPopupKilled, _fsPopupFirstSeen, _fsMainCandidate
+    global _fsPopupKilled, _fsPopupFirstSeen, _fsMainCandidate
+
     global _fsMainEverOpened, CFG
     try {
         if _fsMainCandidate.Has(hwnd)      ; it is, or becomes, Main: never
@@ -4741,7 +4983,7 @@ LockFirestoneMain() {
     if launching
         StartFSBurst()           ; 1 ms while newborn windows are likely
     else
-        SetTimer(FSMainMonitor, CFG.fsCoastMs)   ; steady state: 50 ms watchdog
+        SetTimer(FSMainMonitor, _FSCoastMs())   ; steady state: 50 ms watchdog
     SuppressFirestoneMainTick()  ; immediate enforcement pass
     ; STRESS HARDENING: a second synchronous pass in the SAME thread turn.
     ; Under rapid F3, a re-lock landing microseconds after an unlock must
@@ -4822,7 +5064,7 @@ _FSBurstDecay(*) {
         SetTimer(FSMainMonitor, 0)
         return
     }
-    SetTimer(FSMainMonitor, CFG.fsCoastMs)
+    SetTimer(FSMainMonitor, _FSCoastMs())
 }
 
 StopFSBurst() {
@@ -4843,7 +5085,7 @@ StopFSBurst() {
     ; Previously this re-armed the 1 ms rate whenever ANY other subsystem still
     ; held a high-res timer ref -- so stopping the burst could leave the sweep
     ; running at full speed indefinitely. Coast unconditionally instead.
-    SetTimer(FSMainMonitor, CFG.fsCoastMs)
+    SetTimer(FSMainMonitor, _FSCoastMs())
 }
 
 ; Suppression tick. Cloaks FS‑Main / FS‑Loading so DWM refuses to render them.
@@ -4901,6 +5143,12 @@ SuppressFirestoneMainTick() {
     }
 
     if !State.fsMainLocked
+        return
+
+    ; Nothing to sweep with no Overwolf process alive -- and the enumeration
+    ; below is the expensive part of this script's steady state, so it is worth
+    ; the one cached process check to skip it entirely.
+    if !_OverwolfRunningCached()
         return
 
     try {
@@ -5049,7 +5297,11 @@ StartEarlyOverwolfCloak() {
         _EarlyOWCloakHasRef := true
     }
     SetTimer(_EarlyCloakFailsafeStop, -120000)
-    SetTimer(EarlyOverwolfCloakTick, 3)
+    SetTimer(EarlyOverwolfCloakTick, 15)   ; was 3ms -- same reasoning as
+
+                                           ; fsBurstMs: the event hook does the
+
+                                           ; birth work, this is the backstop
     EarlyOverwolfCloakTick()
 }
 
@@ -5448,7 +5700,51 @@ HSPlacementGuardTick() {
 
 ; Timer entry point — delegates to the tick.
 FSMainMonitor() {
+    global State, _fsBurstHasRef
+    static appliedPeriod := 0
+
     SuppressFirestoneMainTick()
+
+    ; ── Self-retargeting cadence ─────────────────────────────────────────────
+    ; The period is decided here rather than only at the call sites that arm
+    ; this timer, because "settled" is a condition that becomes true while the
+    ; timer is already running -- there is no event to hang it off. Checking it
+    ; on the tick is the one place that is guaranteed to notice.
+    ;
+    ; A burst owns the period outright while it holds the high-res timer ref;
+    ; resetting appliedPeriod there means the first non-burst tick re-decides
+    ; from scratch rather than trusting a stale value.
+    if _fsBurstHasRef {
+        appliedPeriod := 0
+        return
+    }
+    if !State.fsMainLocked
+        return
+    want := _FSCoastMs()
+    if (want = appliedPeriod)
+        return
+    ; Re-check the lock immediately before re-arming, with nothing interruptible
+    ; in between. An F3 unlock lands on another thread and disables this timer;
+    ; if it landed after the check above, this would arm the sweep straight back
+    ; up and no later path would disable it again. Cheap insurance against a
+    ; timer that runs forever after being switched off.
+    if !State.fsMainLocked
+        return
+    appliedPeriod := want
+    SetTimer(FSMainMonitor, want)
+}
+
+; Coast rate, or the slower settled rate once there is nothing left to catch.
+; Every read here is a plain variable -- this is called on the sweep itself, so
+; it must not cost more than the sweep saves.
+_FSCoastMs() {
+    global CFG, _fsMainEverOpened, State, Launch
+    if (CFG.fsSettledMs > CFG.fsCoastMs
+     && _fsMainEverOpened
+     && !State.f2Active
+     && (Launch.state = "IDLE" || Launch.state = "DONE"))
+        return CFG.fsSettledMs
+    return CFG.fsCoastMs
 }
 
 ; ── DWM cloak helpers (state-arbitrated) ──────────────────────────────────────
@@ -5571,7 +5867,7 @@ global _fsMainCandidate  := Map()   ; hwnd -> ever carried a Loading/Main title.
 global _fsBirthReassert  := Map()   ; hwnd -> count of event-speed re-asserts
 global _fsMainLogged     := Map()   ; hwnd -> lifecycle lines already written
 
-; One-line diagnostic to %TEMP%\hs_bg_f1.log. This is the log that ends the
+; One-line diagnostic to HSBG.log (next to the script). This is the log that ends the
 ; guessing: one launch tells you whether Main painted, how long it took, and
 ; which policy was in force when it did or did not.
 _FSLog(msg) {
@@ -5579,7 +5875,7 @@ _FSLog(msg) {
     if !CFG.f1DebugLog
         return
     try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") . " " . msg . "`n"
-        , A_Temp . "\hs_bg_f1.log")
+        , _LogPath())
 }
 
 ; ── Taskbar button suppression (style-free) ───────────────────────────────────
@@ -7023,7 +7319,7 @@ QtHelperJanitor() {
                     try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss")
                         . " QT-HELPER visible owner=" . exe
                         . " hwnd=" . h . " -> re-hidden`n"
-                        , A_Temp . "\hs_bg_f1.log")
+                        , _LogPath())
                 if (n >= 3)
                     continue
                 _qtHelperLogged[h] := n + 1
@@ -7865,8 +8161,10 @@ _BNetDwellMinimize() {
                                 nmx := (mw <= mwW) ? mwaL + (mwW - mw) // 2 : mwaL
                                 nmy := (mh <= mwH) ? mwaT + (mwH - mh) // 2 : mwaT
                                 WinMove(nmx, nmy, , , "ahk_id " . hwnd)
-                                ; brief settle so the move commits before minimize
-                                Sleep(20)
+                                ; Confirm the move before minimizing -- see
+                                ; _WaitWindowOnMonitor. Returns immediately once
+                                ; the window is where it was asked to be.
+                                _WaitWindowOnMonitor(hwnd, ChosenMonIdx, 150)
                             }
                         }
                     }
@@ -7886,6 +8184,36 @@ _BNetDwellMinimize() {
     ; alpha shield before any Overwolf reaction can composite a frame.
     try SuppressFirestoneMainTick()
     StartBNetPostLaunchMinimize()
+}
+
+; Wait, briefly, for a window to actually BE on a monitor after being moved to it.
+;
+; A move is a request, not a fact. A Chromium-based launcher can reposition
+; itself asynchronously after our SetWindowPos, and the caller's next action --
+; a minimize -- is what records the restore origin. Windows restores a window to
+; the monitor it was minimized FROM, so moving and minimizing in the same breath
+; is exactly how the launcher comes back on the wrong screen.
+;
+; This replaces a flat Sleep(20) that only ever worked because AutoHotkey's
+; default SetWinDelay was silently adding 100 ms on top of it. That default is
+; off script-wide now -- it was costing far more elsewhere than it bought here
+; -- so the wait that actually matters is written down and measured instead of
+; inherited. It returns the instant the move is visible, so the normal case
+; still costs nothing.
+_WaitWindowOnMonitor(hwnd, monIdx, timeoutMs := 150) {
+    if !monIdx
+        return true
+    deadline := A_TickCount + timeoutMs
+    Loop {
+        try {
+            WinGetPos(&wmx, &wmy, &wmw, &wmh, "ahk_id " . hwnd)
+            if (wmw > 0 && GetMonitorIndexForPoint(wmx + wmw // 2, wmy + wmh // 2) = monIdx)
+                return true
+        }
+        if (A_TickCount >= deadline)
+            return false
+        Sleep(10)
+    }
 }
 
 StartBNetPostLaunchMinimize(durationMs := 20000) {
@@ -7939,7 +8267,7 @@ BNetPostLaunchMinimizeTick() {
                             nwx := (ww <= wwW) ? wwaL + (wwW - ww) // 2 : wwaL
                             nwy := (wh <= wwH) ? wwaT + (wwH - wh) // 2 : wwaT
                             WinMove(nwx, nwy, , , "ahk_id " . hwnd)
-                            Sleep(20)
+                            _WaitWindowOnMonitor(hwnd, ChosenMonIdx, 150)
                         }
                     }
                 }
@@ -8455,7 +8783,7 @@ SetHSMonitorPref() {
         if CFG.f1DebugLog
             try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss")
                 . " HS-MONITOR-PREF UnitySelectMonitor=" . v
-                . " (chosen mon " . ChosenMonIdx . ")`n", A_Temp . "\hs_bg_f1.log")
+                . " (chosen mon " . ChosenMonIdx . ")`n", _LogPath())
     }
 }
 
@@ -8527,7 +8855,7 @@ _MoveBudgetNote(h) {
         try exe := WinGetProcessName("ahk_id " . h)
         try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss")
             . " MOVE-BUDGET exhausted " . exe . " hwnd=" . h
-            . " — app keeps snapping it back; leaving it`n", A_Temp . "\hs_bg_f1.log")
+            . " — app keeps snapping it back; leaving it`n", _LogPath())
     }
 }
 
@@ -8883,7 +9211,8 @@ CancelLaunchTimers() {
 ; ── HAMMERING entry ───────────────────────────────────────────────────────────
 StartHSLaunch() {
     global Cache, State, Launch, CFG, _smLastTick
-    _smLastTick := A_TickCount        ; baseline the liveness stamp: see the
+    _smLastTick := A_TickCount        ; baseline the liveness stamp: see the
+
                                       ; stale-pipeline guard in Hotkey_F2
     SetHSMonitorPref()
     StartLaunchPlaceAssist()
@@ -9075,9 +9404,14 @@ LaunchStateMachine_Tick() {
             return
         }
 
-        if (Launch.retries = 50)
+        ; Back off a hammer that is getting nowhere. Counted in TICKS, so these
+        ; two numbers moved with hammerFastMs when it was halved -- 100 ticks at
+        ; 100ms is the same ten seconds 50 ticks at 200ms was. Getting this
+        ; wrong does not break anything, it just gives up on the fast phase
+        ; twice as early as intended.
+        if (Launch.retries = 100)
             SetTimer(LaunchStateMachine_Tick, 500)
-        else if (Launch.retries = 100)
+        else if (Launch.retries = 200)
             SetTimer(LaunchStateMachine_Tick, 1000)
         return
     }
@@ -9247,6 +9581,14 @@ LaunchFirestoneNow() {
     }
 
     try Run(cmd)
+    ; INVALIDATE THE "IS OVERWOLF RUNNING" CACHE, NOW.
+    ;
+    ; The suppression sweeps skip their enumeration when no Overwolf process
+    ; exists. That answer was last computed moments ago -- before this line --
+    ; and it was "no". Left alone it would stay "no" for up to a second, which
+    ; is precisely the second in which Overwolf creates its first windows, and
+    ; the sweeps armed forty lines above would sit out the whole of it.
+    try _OverwolfRunningCached(true)
     ; Run() returning without throwing means a process was STARTED, not that
     ; Firestone works. A crash a second later -- the "critical error, no
     ; overlay" a user reported -- is indistinguishable from success at this
@@ -9548,7 +9890,11 @@ _LaunchPipelineAlive() {
 ; permanently disconnected or input-shielded -- the "stuck frozen, had to
 ; restart" failure. Harmless if the normal path already cleaned up.
 _F1FailsafeRelease() {
-    try RemoveIPBlock()
+    ; FORCED. This runs at most once per press, and only when the F1 thread did
+    ; not clean up after itself -- which is exactly the situation in which the
+    ; _ipBlockOn flag cannot be trusted. Paying two netsh calls here is the
+    ; whole point of a failsafe.
+    try RemoveIPBlock(true)
     try StopHSInputShield()
     ; The Battle.net guard is deliberately NOT stopped here. It is bounded and
     ; self-expiring, and this failsafe only runs when the F1 thread died -- the
@@ -9557,7 +9903,7 @@ _F1FailsafeRelease() {
 }
 
 Hotkey_F1() {
-    global State, CFG
+    global State, CFG, InputShield
     _HotkeyTone("F1")
 
     hsPID := GetHSPID()
@@ -9625,7 +9971,7 @@ Hotkey_F1() {
             . " target=" . CFG.f1Target . " pid=" . hsPID . " cnt=" . r.cnt
             . " svcCnt=" . r.svcCnt . " block=" . target
             . " hold=" . CFG.forcefulHoldMs . "`n"
-            . r.detail, A_Temp . "\hs_bg_f1.log")
+            . r.detail, _LogPath())
     }
 
     if (target = "") {
@@ -9666,7 +10012,7 @@ Hotkey_F1() {
             ; to check when a skip felt wrong.
             try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") . " F1 hold "
                 . (A_TickCount - holdStart) . "ms (fixed " . CFG.forcefulHoldMs . ")`n"
-                , A_Temp . "\hs_bg_f1.log")
+                , _LogPath())
         }
 
         RemoveIPBlock()
@@ -9682,8 +10028,15 @@ Hotkey_F1() {
         BgHUD.Show("F1 failed — unblocking", 1500)
     } finally {
         try RemoveIPBlock()
-        Sleep(300)
-        try StopHSInputShield()
+        ; The settle sleep only exists so the shield outlives the unblock on the
+        ; FAILURE path. On the normal path the shield was already stopped
+        ; twenty lines up, so sleeping here is 300 ms of the key simply not
+        ; being ready again for no reason. Sleep only if there is still a shield
+        ; to hold.
+        if (InputShield.active) {
+            Sleep(300)
+            try StopHSInputShield()
+        }
         State.lastF1End := A_TickCount
     }
 }
@@ -10143,7 +10496,7 @@ try {
     A_TrayMenu.Insert("1&", "What is under my cursor?", (*) => WhatIsUnderCursor())
     A_TrayMenu.Insert("1&", "Test hotkey sound", (*) => TestHotkeySound())
     A_TrayMenu.Insert("1&", "Reload settings", (*) => ReloadUserConfig())
-    A_TrayMenu.Insert("1&", "Open settings (HSBG.ini)", (*) => OpenConfigFile())
+    A_TrayMenu.Insert("1&", "Open settings (HSBG Config.ini)", (*) => OpenConfigFile())
 }
 
 OpenConfigFile() {
@@ -10158,7 +10511,7 @@ OpenConfigFile() {
     }
 }
 
-; Re-read HSBG.ini and apply what can be applied without a restart.
+; Re-read HSBG Config.ini and apply what can be applied without a restart.
 ;
 ; Honest about its limits: the monitor lock starts and stops cleanly, and the
 ; hotkey tones only need their files built. Anything else in CFG was consumed
@@ -10452,7 +10805,7 @@ PrewarmRules() {
 ; fires even when DirectInput/fullscreen mode swallows the window message.
 SetTimer(F4Watchdog, 500)
 
-; Build the hotkey notes if HSBG.ini turned them on. Deferred off the start-up
+; Build the hotkey notes if HSBG Config.ini turned them on. Deferred off the start-up
 ; path: generating four waveforms takes about a second, and a hotkey pressed in
 ; that second must not wait for it -- a press before they exist builds them on
 ; the spot and falls back to a plain beep, so it is never silent.
