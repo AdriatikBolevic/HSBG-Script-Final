@@ -325,7 +325,15 @@ global CFG := {
     ; that is corrected only when it lands on the wrong one.
 
     ruleName:                "HS_BG",
-    cooldownTime:            2000,   ; ms between F1 presses (anti‑stacking)
+    cooldownTime:            750,    ; ms after one F1 finishes before the next is
+                                     ; accepted. WAS 2000, which was sized for a
+                                     ; press that took three seconds; on top of
+                                     ; that it meant nearly five seconds between
+                                     ; usable presses. Re-entry during a press is
+                                     ; already impossible -- #MaxThreadsPerHotkey
+                                     ; is 1 for F1 -- so this only has to stop a
+                                     ; double-tap from queueing a second block
+                                     ; immediately after the first releases.
 
     ; ── F1 forceful combat‑skip (services‑preserving) settings ──────────────
     ; Mid‑combat HS's game socket is idle, so a passive whole‑app block is never
@@ -735,6 +743,16 @@ global CFG := {
                                        ; A new launch re-arms the burst, so this
                                        ; only ever applies to a settled session.
                                        ; Set equal to fsCoastMs to disable.
+    fsEventBurstMs:          3000,     ; how long a burst triggered by a single
+                                       ; new window lasts. This is what makes
+                                       ; fsSettledMs safe: the event hook sees a
+                                       ; window being created and snaps the sweep
+                                       ; back to fsBurstMs for this long, so the
+                                       ; slow rate only ever applies while
+                                       ; genuinely nothing is happening. Three
+                                       ; seconds comfortably covers a Chromium
+                                       ; window going from created to titled to
+                                       ; painted. 0 disables the nudge.
 
     bnetMinimizeCeilingMs:   60000,
 
@@ -2710,6 +2728,128 @@ PortsToCsv(arr) {
     return s
 }
 
+; ══════════════════════════════════════════════════════════════════════════════
+;  FAST PATH: read the TCP table directly instead of asking PowerShell
+; ══════════════════════════════════════════════════════════════════════════════
+;
+; THIS IS THE SINGLE BIGGEST SOURCE OF F1 LATENCY, AND IT IS ENTIRELY OURS.
+;
+; Finding the game's connection used to mean: write a .ps1 to disk, spawn
+; powershell.exe, wait for it to start, load Get-NetTCPConnection, run it, write
+; a file, exit -- then read the file. That is 400-900 ms on a warm machine and
+; well over a second on a cold or busy one, and every millisecond of it is
+; BEFORE the block is applied, so the user experiences it as F1 doing nothing.
+; It is also the thing that fails under load: a PowerShell that takes too long
+; is a press that seems to have been ignored, which is why pressing F1 twice
+; "worked". The second press was not fixing anything -- the first one was still
+; starting up.
+;
+; Windows exposes exactly this data through the IP Helper API. GetExtendedTcpTable
+; returns every TCP connection with its owning process id, from a DLL that is
+; already loaded, with no process spawn and no disk. It costs under a
+; millisecond.
+;
+; DELIBERATELY IPv4-ONLY, AND DELIBERATELY A FAST PATH RATHER THAN A REPLACEMENT.
+; The PowerShell enumeration also handles IPv6 and, critically, sorts the
+; services-port connections by creation time -- which the TCP table does not
+; expose at all. So this answers only the common question ("which public
+; non-services address is Hearthstone talking to over IPv4"), and the caller
+; falls through to the original path untouched whenever this finds nothing.
+; Every setup the old code handled is still handled by the old code; the normal
+; case simply stops paying for a process spawn.
+;
+; Returns {ips, cnt, detail} -- ips is a comma-separated list, "" if none.
+_FastGameServerIPs(hsPID) {
+    global CFG
+    static AF_INET               := 2
+    static TCP_TABLE_OWNER_PID_ALL := 5
+    static MIB_TCP_STATE_ESTAB   := 5
+    static ROW_BYTES             := 24    ; 6 x DWORD, see below
+
+    out := {ips: "", cnt: 0, detail: ""}
+    if !hsPID
+        return out
+
+    ; Two calls: one to learn the size, one to fill the buffer. The table can
+    ; grow between them, so the size call is retried a few times rather than
+    ; assumed -- ERROR_INSUFFICIENT_BUFFER (122) is the signal.
+    size := 0
+    buf  := 0
+    Loop 4 {
+        rc := DllCall("iphlpapi\GetExtendedTcpTable", "Ptr", 0, "UInt*", &size
+            , "Int", 0, "UInt", AF_INET, "Int", TCP_TABLE_OWNER_PID_ALL, "UInt", 0, "UInt")
+        if (rc != 122 && rc != 0)
+            return out                       ; not something a retry fixes
+        if (size <= 0)
+            return out
+        buf := Buffer(size, 0)
+        rc := DllCall("iphlpapi\GetExtendedTcpTable", "Ptr", buf, "UInt*", &size
+            , "Int", 0, "UInt", AF_INET, "Int", TCP_TABLE_OWNER_PID_ALL, "UInt", 0, "UInt")
+        if (rc = 0)
+            break
+        if (rc != 122)
+            return out
+        buf := 0                             ; grew underneath us: size again
+    }
+    if !IsObject(buf)
+        return out
+
+    ; MIB_TCPTABLE_OWNER_PID:  DWORD dwNumEntries, then dwNumEntries rows of
+    ; MIB_TCPROW_OWNER_PID { dwState, dwLocalAddr, dwLocalPort, dwRemoteAddr,
+    ; dwRemotePort, dwOwningPid } -- six DWORDs, 24 bytes, no padding.
+    n := NumGet(buf, 0, "UInt")
+    if (n <= 0 || (4 + n * ROW_BYTES) > size)
+        return out
+
+    svcCsv  := "," . PortsToCsv(CFG.servicesPorts) . ","
+    gameCsv := PortsToCsv(CFG.gamePorts)
+    seen    := Map()
+
+    Loop n {
+        off := 4 + (A_Index - 1) * ROW_BYTES
+        if (NumGet(buf, off + 20, "UInt") != hsPID)
+            continue
+        if (NumGet(buf, off + 0, "UInt") != MIB_TCP_STATE_ESTAB)
+            continue
+
+        ; Ports are stored in NETWORK byte order in the low 16 bits.
+        rp := NumGet(buf, off + 16, "UInt") & 0xFFFF
+        rp := ((rp & 0xFF) << 8) | ((rp >> 8) & 0xFF)
+
+        if (gameCsv != "") {
+            ; Explicit allow-list: only these remote ports are ever considered,
+            ; exactly as documented for CFG.gamePorts.
+            if !InStr("," . gameCsv . ",", "," . rp . ",")
+                continue
+        } else if InStr(svcCsv, "," . rp . ",") {
+            continue                          ; services/auth port: never ours
+        }
+
+        ra := NumGet(buf, off + 12, "UInt")
+        b1 := ra & 0xFF, b2 := (ra >> 8) & 0xFF, b3 := (ra >> 16) & 0xFF, b4 := (ra >> 24) & 0xFF
+
+        ; Same private / loopback / link-local exclusion as the PowerShell
+        ; enumeration, expressed numerically. A game server is a public address.
+        if (b1 = 10 || b1 = 127 || b1 = 0)
+            continue
+        if (b1 = 169 && b2 = 254)
+            continue
+        if (b1 = 192 && b2 = 168)
+            continue
+        if (b1 = 172 && b2 >= 16 && b2 <= 31)
+            continue
+
+        ip := b1 . "." . b2 . "." . b3 . "." . b4
+        out.cnt++
+        out.detail .= "GAME " . ip . ":" . rp . " (fast)`n"
+        if !seen.Has(ip) {
+            seen[ip] := true
+            out.ips .= (out.ips = "" ? "" : ",") . ip
+        }
+    }
+    return out
+}
+
 ; Find the live game‑server connection(s). Enumeration ONLY — nothing is reset
 ; or blocked here; the caller applies CFG.f1Target to the result.
 ; Returns a stats object:
@@ -3206,6 +3346,88 @@ _PlaceHSOnChosenMonitor(hwnd) {
     return false
 }
 
+; ── FULLSCREEN PROBE: makes "the taskbar was still showing" provable ─────────
+;
+; Reported symptom: Hearthstone is set to fullscreen, the game opens, and the
+; taskbar is still drawn over it. That has three possible causes and they need
+; different fixes, so guessing is worthless:
+;
+;   1. The game's window does not actually cover the monitor. Then it is a
+;      placement problem and it is ours.
+;   2. It covers the monitor but is not the foreground window. Then something
+;      took the foreground during start-up and Windows kept the shell drawn.
+;   3. It covers the monitor and IS foreground, but another TOPMOST window
+;      overlaps that monitor. Windows will not let a window suppress the
+;      taskbar while something else is pinned above it -- and if that window
+;      belongs to this script, it is ours to fix.
+;
+; So this records all three, once, a few seconds after the window appears --
+; late enough for Unity to have finished negotiating its display mode. It reads
+; state and changes nothing. Any topmost overlapping window is named with its
+; process, which is the one fact needed to tell "the script did this" from
+; "Firestone's overlay did this" from "something else on the machine did this".
+HSFullscreenProbe(*) {
+    global CFG
+    if !CFG.f1DebugLog
+        return
+    try {
+        hs := 0
+        prev := A_DetectHiddenWindows
+        DetectHiddenWindows false
+        for h in WinGetList("ahk_exe Hearthstone.exe") {
+            try {
+                if (WinGetTitle("ahk_id " . h) != "Hearthstone")
+                    continue
+                WinGetPos(, , &pw, &ph, "ahk_id " . h)
+                if (pw >= 600 && ph >= 400) {
+                    hs := h
+                    break
+                }
+            }
+        }
+        DetectHiddenWindows prev
+        if !hs
+            return
+
+        WinGetPos(&hx, &hy, &hw, &hh, "ahk_id " . hs)
+        mIdx := GetMonitorIndexForPoint(hx + hw // 2, hy + hh // 2)
+        _SafeMonitorRect(mIdx, &ml, &mt, &mr, &mb)
+        covers := (hx <= ml && hy <= mt && (hx + hw) >= mr && (hy + hh) >= mb)
+        fg     := (DllCall("user32\GetForegroundWindow", "Ptr") = hs)
+
+        ; Anything topmost and visible that overlaps the game's monitor.
+        intruders := ""
+        for h in WinGetList() {
+            try {
+                if (h = hs)
+                    continue
+                if !DllCall("user32\IsWindowVisible", "Ptr", h)
+                    continue
+                if !(WinGetExStyle("ahk_id " . h) & 0x8)      ; WS_EX_TOPMOST
+                    continue
+                WinGetPos(&tx, &ty, &tw, &th, "ahk_id " . h)
+                if (tw <= 0 || th <= 0)
+                    continue
+                if (tx >= mr || ty >= mb || (tx + tw) <= ml || (ty + th) <= mt)
+                    continue                                   ; no overlap
+                nm := ""
+                try nm := WinGetProcessName("ahk_id " . h)
+                ttl := ""
+                try ttl := WinGetTitle("ahk_id " . h)
+                intruders .= (intruders = "" ? "" : "; ") . nm
+                          . " [" . ttl . "] " . tw . "x" . th
+            }
+        }
+
+        _FSLog("HS-FULLSCREEN window=" . hw . "x" . hh . " at " . hx . "," . hy
+             . " monitor " . mIdx . "=" . (mr - ml) . "x" . (mb - mt)
+             . " at " . ml . "," . mt
+             . " covers=" . (covers ? 1 : 0)
+             . " foreground=" . (fg ? 1 : 0)
+             . " topmost-over-it=" . (intruders = "" ? "(none)" : intruders))
+    }
+}
+
 ; NOTHING HERE SHOWS THE WINDOW -- the game did that itself. This is placement
 ; and cleanup only.
 ;
@@ -3229,6 +3451,17 @@ RevealHSAfterLaunch() {
     StopHSHiddenLaunchWatch()
     StopHSCloaker()
     try UnmuteHearthstone()   ; repair: undo a mute left by an older build
+
+    ; The game's window exists. Take the status text off the screen NOW rather
+    ; than at CompleteHSLaunchSuccess: it is an ALWAYSONTOP window sitting on
+    ; the monitor the game is about to fill, and the seconds after the window
+    ; appears are exactly when Unity decides whether it is allowed to go
+    ; fullscreen. Nothing of ours should be pinned above the game during that.
+    try BgHUD.Hide()
+
+    ; Read back what actually happened, once Unity has settled. Diagnostic
+    ; only -- see HSFullscreenProbe.
+    SetTimer(HSFullscreenProbe, -4000)
 
     ; Release the launcher's foreground pin. The minimize normally does this
     ; first, but "normally" is not a guarantee -- a slow client, a retry, or a
@@ -3451,6 +3684,12 @@ HideOverwolfLauncher() {
         SetTimer(HideOverwolfLauncher, 0)
         return
     }
+    ; This runs at 10 ms for up to a minute, which is the same minute
+    ; Hearthstone spends initialising. The splash process it hides exists for a
+    ; few seconds of that at most; for the rest, every tick was enumerating the
+    ; whole desktop to find nothing. One cached process check instead.
+    if !_ProcExistCached("OverwolfLauncher.exe")
+        return
     prev := A_DetectHiddenWindows
     DetectHiddenWindows true
     try {
@@ -3804,6 +4043,11 @@ OWCreateHookProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, d
                 if (CFG.fsBirthHide && !_fsBirthHidden.Has(hwnd))
                     _fsBirthHidden[hwnd] := A_TickCount
                 try _FSSuppressSurface(hwnd, "", false)
+                ; A window was just born, so the sweep is no longer watching a
+                ; settled session. Snap it back to burst speed for a few
+                ; seconds -- this is what stops the slow settled cadence from
+                ; ever being the thing a new window paints through.
+                try _FSEventNudge()
             }
         }
         ; ---- BIRTH SUPPRESSION RE-ASSERT ----
@@ -3824,6 +4068,7 @@ OWCreateHookProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, d
                 if (n < CFG.fsBirthReassertMax) {
                     _fsBirthReassert[hwnd] := n + 1
                     try _FSSuppressSurface(hwnd, "", false)
+                    try _FSEventNudge()
                 } else if (n = CFG.fsBirthReassertMax) {
                     _fsBirthReassert[hwnd] := n + 1
                     _FSLog("FS-COLD re-assert cap reached hwnd=" . hwnd
@@ -4293,6 +4538,38 @@ _FSLogVisibleSurface(hwnd) {
 ; top-level window on the desktop and resolving a process name for each, to
 ; discover there was nothing to do. One second of staleness costs nothing: the
 ; launch path arms its own fast instance directly rather than waiting for this.
+; Does this process exist? Cached per name for half a second.
+;
+; Same reasoning as _OverwolfRunningCached, generalised: several sweeps run at
+; 10-15 ms for a minute or two either side of a launch, and a WinGetList that
+; matches on ahk_exe resolves a process name for every top-level window on the
+; desktop. When the process it is looking for does not exist, all of that work
+; produces an empty list. One cached ProcessExist answers the same question for
+; a fraction of the cost, and half a second of staleness is far shorter than
+; anything these sweeps are racing.
+; A NEGATIVE ANSWER IS NOT CACHED. That asymmetry is the whole design.
+;
+; Caching "it is not running" is the dangerous half: the process this guards
+; against is started BY this script, moments after the last check, and a cached
+; "no" would blind the sweep for the first half-second of the splash's life --
+; precisely the window it exists to cover. Caching "it is running" is free,
+; because the answer only gets staler in the harmless direction.
+;
+; So a miss costs one ProcessExist per tick, which is still enormously cheaper
+; than the desktop-wide window enumeration it replaces, and a hit costs nothing.
+_ProcExistCached(exe) {
+    static seen := Map()
+    e := seen.Get(exe, 0)
+    if (e && A_TickCount - e.at < 500)
+        return e.val
+    v := ProcessExist(exe)
+    if v
+        seen[exe] := {at: A_TickCount, val: v}
+    else if e
+        _MapDrop(seen, exe)
+    return v
+}
+
 _OverwolfRunningCached(bust := false) {
     static primed := false, last := 0, val := false
     if bust {
@@ -4313,6 +4590,13 @@ _OverwolfRunningCached(bust := false) {
 
 SuppressFirestoneLoadingTick() {
     global State, _fsHiddenByUs, _fsOWFirstSeen
+    ; The one gate this sweep gets. It was briefly also stood down once
+    ; Firestone Main had opened, on the reasoning that the loading splash only
+    ; appears once -- which is wrong twice over: Overwolf restarts itself for
+    ; updates, and FirestoneHealthCheck restarts a crashed Firestone, both
+    ; outside any launch. This sweep is the ONLY steady-state suppressor for
+    ; that splash (it is an owned window, so the main sweep skips it as a
+    ; helper), so standing it down means the splash paints. It stays on.
     if !_OverwolfRunningCached()
         return
     prev     := A_DetectHiddenWindows
@@ -5032,11 +5316,17 @@ _ForceReleaseHighResTimer() {
 ; a high‑res ref.
 global _fsBurstHasRef := false
 
+; How long the current burst is scheduled to last. Lets a short event-driven
+; nudge and a long launch burst coexist without the short one cutting the long
+; one off -- see _FSEventNudge.
+global _fsBurstUntil := 0
+
 StartFSBurst() {
-    global State, _fsBurstHasRef, CFG
+    global State, _fsBurstHasRef, CFG, _fsBurstUntil
     if !State.fsMainLocked
         return
 
+    _fsBurstUntil := A_TickCount + CFG.fsBurstMaxMs
     if !_fsBurstHasRef {
         _AcquireHighResTimer()
         _fsBurstHasRef := true
@@ -5054,8 +5344,53 @@ StartFSBurst() {
 ; Drop the suppression sweep from the burst rate to the coast rate and give up
 ; the high-resolution timer period. Suppression itself is unchanged -- only how
 ; often it re-checks. Safe to call at any time, including twice.
+; ── EVENT NUDGE: what makes the settled 250 ms rate safe ─────────────────────
+;
+; The suppression sweep has three speeds, and the slowest one exists because a
+; settled session creates no new windows for minutes at a time. The obvious
+; hole in that reasoning is the moment it stops being true -- Firestone opens
+; its Battlegrounds window when a match starts, and if the sweep is idling at
+; 250 ms that window has a quarter of a second to paint before the backstop
+; notices. That is a visible flash across the screen, and it is exactly what
+; was reported.
+;
+; The window event hook sees every creation the instant it happens, so the
+; script already knows the moment "nothing is happening" stops being true. This
+; is the sweep reacting to that: any newborn Overwolf window snaps the cadence
+; straight back to burst speed for a few seconds, then it decays again.
+;
+; It never SHORTENS an existing burst -- a launch burst is twenty seconds and a
+; nudge is three, and a window created during a launch must not cut the launch
+; burst down to its own length. _fsBurstUntil is the comparison that prevents
+; that.
+_FSEventNudge() {
+    global State, _fsBurstHasRef, _fsBurstUntil, CFG
+    static lastNudge := 0
+    if (!State.fsMainLocked || CFG.fsEventBurstMs <= 0)
+        return
+    ; Chromium creates windows in clusters -- a visible frame plus several
+    ; hidden IPC surfaces, all within a few milliseconds. The first of those
+    ; has already set the sweep to burst speed and the rest would only re-arm
+    ; the same timers, so anything arriving inside one sweep interval is
+    ; redundant. This keeps a burst of creations from costing a burst of work.
+    if (lastNudge && A_TickCount - lastNudge < CFG.fsBurstMs)
+        return
+    lastNudge := A_TickCount
+    burstUntil := A_TickCount + CFG.fsEventBurstMs
+    if (_fsBurstHasRef && _fsBurstUntil >= burstUntil)
+        return                      ; a longer burst already covers this
+    if !_fsBurstHasRef {
+        _AcquireHighResTimer()
+        _fsBurstHasRef := true
+    }
+    _fsBurstUntil := burstUntil
+    SetTimer(FSMainMonitor, CFG.fsBurstMs)
+    SetTimer(_FSBurstDecay, -CFG.fsEventBurstMs)
+}
+
 _FSBurstDecay(*) {
-    global State, _fsBurstHasRef, CFG
+    global State, _fsBurstHasRef, CFG, _fsBurstUntil
+    _fsBurstUntil := 0
     if _fsBurstHasRef {
         _ReleaseHighResTimer()
         _fsBurstHasRef := false
@@ -5068,8 +5403,9 @@ _FSBurstDecay(*) {
 }
 
 StopFSBurst() {
-    global State, _fsBurstHasRef, CFG
+    global State, _fsBurstHasRef, CFG, _fsBurstUntil
 
+    _fsBurstUntil := 0
     SetTimer(_FSBurstDecay, 0)          ; no decay can fire after an explicit stop
 
     if _fsBurstHasRef {
@@ -5376,6 +5712,18 @@ EarlyOverwolfCloakTick() {
         SetTimer(EarlyOverwolfCloakTick, 0)
         return
     }
+    ; Armed for two minutes at 15 ms, which spans the whole of Hearthstone's
+    ; start-up. Skip the enumeration outright while there is no Overwolf
+    ; process for it to enumerate -- which is most of that window on a machine
+    ; where Overwolf starts slowly, and all of it on one without Firestone.
+    ;
+    ; This is a SKIP, NOT A RETURN, and the difference matters: the self-stop at
+    ; the bottom of this function is how the blanket ends and how it gives back
+    ; the 1 ms system timer resolution. Returning early past it meant a
+    ; Firestone that died during the grace period held high-resolution timing
+    ; next to the game until the 120-second failsafe, instead of about three
+    ; seconds -- the exact opposite of what this change is for.
+    if _OverwolfRunningCached() {
 
     prev := A_DetectHiddenWindows
     DetectHiddenWindows true
@@ -5433,7 +5781,8 @@ EarlyOverwolfCloakTick() {
             }
         }
     }
-    DetectHiddenWindows prev
+        DetectHiddenWindows prev
+    }   ; end of the "Overwolf is running" skip
 
     ; SELF‑STOP: end the blanket only when ALL THREE are true —
     ;   • FS‑Main has been titled for the 3s grace,
@@ -5590,6 +5939,27 @@ HSCloakTick() {
         }
     }
     DetectHiddenWindows prev
+
+    ; ── BACK OFF ONCE THE LAUNCHER IS GONE ───────────────────────────────────
+    ;
+    ; This blanket runs at 10 ms and enumerates three Battle.net executables on
+    ; every tick -- thirty full desktop enumerations a second. It needs that
+    ; speed for one specific window: the boot splash and auto-login shell,
+    ; which appear and start painting within milliseconds of each other. That
+    ; is over the moment the launcher has minimised.
+    ;
+    ; After that, StopHSCloaker is still ten to thirty seconds away -- it waits
+    ; for Hearthstone's window -- and those are the seconds the game spends
+    ; loading, on the machines where loading is slowest. Holding 100 Hz through
+    ; them buys nothing and competes with the game for the CPU. A late stray
+    ; service window is still caught, 100 ms later, and it would be caught by
+    ; the window event hook first in any case.
+    static appliedPeriod := 0
+    want := _bnetPostMinDone ? 100 : 10
+    if (want != appliedPeriod && _HSCloakActive) {
+        appliedPeriod := want
+        SetTimer(HSCloakTick, want)
+    }
 }
 
 ; ── HS post‑reveal placement guard ────────────────────────────────────────────
@@ -8508,6 +8878,20 @@ StartFSReveal() {
 StopFSReveal() {
     global _fsRevealActive, _fsRevealFirstSeen, _fsRevealNudged
     global _fsPaintState, CFG
+    ; _fsRevealDone and _fsRevealSettled ARE ON THIS LINE FOR A REASON.
+    ;
+    ; They were missing, and in AutoHotkey v2 an undeclared name assigned
+    ; inside a function is a LOCAL -- so the two resets at the bottom of this
+    ; function were creating two fresh local maps, clearing those, and throwing
+    ; them away, while the globals of the same name were never touched.
+    ;
+    ; This is a correctness repair, not a bug fix for an observed symptom:
+    ; StartFSReveal assigns both globals a fresh Map on every press, so nothing
+    ; actually leaked between reveals. But a function whose last two statements
+    ; silently do nothing is a trap for whoever edits it next -- add a third
+    ; ledger here and it will behave differently from these two for no visible
+    ; reason. Declared, so the code does what it reads as doing.
+    global _fsRevealDone, _fsRevealSettled
     _fsRevealActive := false
     SetTimer(FSRevealTick, 0)
 
@@ -8777,6 +9161,31 @@ SetHSMonitorPref() {
             v := ChosenMonIdx - 1
         if (v < 0)
             v := 0
+
+        ; ── ONLY WRITE WHEN IT ACTUALLY CHANGES ──────────────────────────────
+        ;
+        ; This is Unity's own saved display selection -- the game's setting,
+        ; not ours. Rewriting it on every launch is a standing invitation for
+        ; the script to override a choice the user made inside the game, and
+        ; when the value changes Unity re-runs its display setup on start-up:
+        ; new display, new mode negotiation, and a fullscreen game that can
+        ; come up as a fullscreen WINDOW instead -- with the taskbar still
+        ; drawn over it.
+        ;
+        ; Reading first makes the common case -- the value is already what we
+        ; want -- a genuine no-op, so the only launches that touch Unity's
+        ; display state are the ones that had to.
+        cur := ""
+        try cur := RegRead("HKCU\Software\Blizzard Entertainment\Hearthstone"
+                         , "UnitySelectMonitor_h17969598")
+        if (cur != "" && cur = v) {
+            if CFG.f1DebugLog
+                try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss")
+                    . " HS-MONITOR-PREF already " . v . " -- not rewriting`n"
+                    , _LogPath())
+            return
+        }
+
         RegWrite(v, "REG_DWORD"
             , "HKCU\Software\Blizzard Entertainment\Hearthstone"
             , "UnitySelectMonitor_h17969598")
@@ -9427,7 +9836,7 @@ PostLoginLaunch() {
 ; ── Launch complete ───────────────────────────────────────────────────────────
 ; Called as soon as the HS window is confirmed present.
 CompleteHSLaunchSuccess() {
-    global State, Launch
+    global State, Launch, _fsBurstUntil
     if (Launch.state = "DONE" || Launch.state = "IDLE")
         return
     Launch.state   := "DONE"
@@ -9450,9 +9859,17 @@ CompleteHSLaunchSuccess() {
 
     StartOverlayTopmostEnforcer()
 
-    ; The launch is over, so the 1 ms suppression burst has no more newborn
-    ; windows to beat. Let it decay to the coast rate shortly after HS settles
-    ; instead of riding the full fsBurstMaxMs window.
+    ; The launch is over, so the suppression burst has no more newborn windows
+    ; to beat. Let it decay to the coast rate shortly after HS settles instead
+    ; of riding the full fsBurstMaxMs window.
+    ;
+    ; _fsBurstUntil MOVES WITH THE TIMER. It is what _FSEventNudge consults to
+    ; decide whether an existing burst already covers a new window; leaving it
+    ; at the original twenty-second horizon while the decay is pulled in to five
+    ; seconds means a window created in between is refused a nudge on the
+    ; grounds of a burst that is about to end. Those are exactly the seconds
+    ; Firestone spends finishing Main and Battlegrounds.
+    _fsBurstUntil := A_TickCount + 5000
     SetTimer(_FSBurstDecay, -5000)
 
     ; Post-F2 transparency repair. The symptom is reported after F2 on both the
@@ -9912,7 +10329,15 @@ Hotkey_F1() {
         return
     }
 
+    ; ── A DROPPED PRESS NOW SAYS SO ──────────────────────────────────────────
+    ; This used to return in silence. Combined with a press that took three
+    ; seconds to complete, the user experience was: press F1, see nothing
+    ; happen, press it again -- and the second press landed inside the cooldown
+    ; and was also discarded, silently. "I have to press it twice" is that loop
+    ; seen from outside. The toast costs nothing and turns an invisible refusal
+    ; into an answer.
     if (State.lastF1End && (A_TickCount - State.lastF1End) < CFG.cooldownTime) {
+        BgHUD.Show("F1 cooling down…", 700)
         return
     }
 
@@ -9953,7 +10378,24 @@ Hotkey_F1() {
     }
 
     ; ── Default: IP block ────────────────────────────────────────────────────
-    r := FindGameServerIPs(hsPID)
+    ; ── FAST PATH FIRST ──────────────────────────────────────────────────────
+    ; The TCP table answers the common question in under a millisecond. Only
+    ; when it finds nothing does this fall through to the PowerShell
+    ; enumeration, which costs most of a second but also covers IPv6 and the
+    ; services-port ordering the table cannot express. See _FastGameServerIPs.
+    ;
+    ; f1Target="all" is excluded on purpose. That mode blocks the services
+    ; addresses too, and the fast path cannot report them -- taking it would
+    ; quietly turn the documented sledgehammer back into the smart one at the
+    ; exact moment someone reached for it because smart was picking wrong.
+    fast := (CFG.f1Target = "all") ? {ips: "", cnt: 0, detail: ""}
+                                   : _FastGameServerIPs(hsPID)
+    if (fast.ips != "") {
+        r := {nonSvcIps: fast.ips, svcNewestIp: "", svcIps: "", svcCnt: 0
+            , cnt: fast.cnt, detail: fast.detail}
+    } else {
+        r := FindGameServerIPs(hsPID)
+    }
     target := r.nonSvcIps
     if (CFG.f1Target = "all") {
         Loop Parse, r.svcIps, "," {
@@ -9961,8 +10403,45 @@ Hotkey_F1() {
             if (ip != "" && !InStr("," . target . ",", "," . ip . ","))
                 target .= (target = "" ? "" : ",") . ip
         }
-    } else if (r.svcNewestIp != ""
+    } else if (r.svcCnt >= 2 && r.svcNewestIp != "" && PortsToCsv(CFG.gamePorts) = ""
             && !InStr("," . target . ",", "," . r.svcNewestIp . ",")) {
+        ; ── THE SERVICES FALLBACK, AND WHY IT IS NOW FENCED IN ───────────────
+        ;
+        ; This branch exists for setups where the match itself runs over port
+        ; 1119, the same port Blizzard's login and services connection uses. On
+        ; those setups the two are told apart by age: the auth connection is
+        ; created when the client starts, the game connection when the match
+        ; begins, so the NEWEST 1119 connection is the game.
+        ;
+        ; That reasoning holds only while there are two of them. It used to run
+        ; unconditionally, and the failure mode was severe: press F1 with no
+        ; match in progress -- sitting in the menu, or queuing -- and the only
+        ; 1119 connection in existence is the auth connection. "Newest" then
+        ; selects the one connection that must never be touched, and blocking
+        ; it produces exactly the screen it sounds like:
+        ;
+        ;     "Your game has been disconnected from the Blizzard game service."
+        ;
+        ; ONE condition fences it in, and it is the one the reasoning rests on:
+        ;
+        ;   svcCnt >= 2      There must be an OLDER services connection for the
+        ;                    newest one to be newer THAN. With a single
+        ;                    connection there is nothing to compare against and
+        ;                    "newest" means "the only one" -- which is the auth
+        ;                    connection, every time.
+        ;
+        ; It is NOT additionally gated on having found nothing else. That was
+        ; tried and it is wrong: Hearthstone holds ordinary public connections
+        ; that have nothing to do with the match -- shop, news, telemetry, a CDN
+        ; keep-alive on 443 -- so "we already found something" is not the same
+        ; as "we found the game". On a 1119 setup that gate would leave F1
+        ; blocking a CDN address for a second and a half while the match ran on
+        ; untouched: a press that appears to do nothing at all. The services
+        ; address is ADDED to the list, as it always was.
+        ;
+        ; The gamePorts check honours the explicit override: if the user has
+        ; named the match ports themselves, this heuristic has no business
+        ; adding a port they deliberately excluded.
         target .= (target = "" ? "" : ",") . r.svcNewestIp
     }
 
@@ -10493,10 +10972,109 @@ A_IconTip := "Battle Grounds " . HSBG_BUILD . " — running"
 ; failure this menu exists to answer.
 try {
     A_TrayMenu.Insert("1&")                       ; separator above the defaults
+    A_TrayMenu.Insert("1&", "Log Firestone's windows", (*) => LogFirestoneWindows())
     A_TrayMenu.Insert("1&", "What is under my cursor?", (*) => WhatIsUnderCursor())
     A_TrayMenu.Insert("1&", "Test hotkey sound", (*) => TestHotkeySound())
     A_TrayMenu.Insert("1&", "Reload settings", (*) => ReloadUserConfig())
     A_TrayMenu.Insert("1&", "Open settings (HSBG Config.ini)", (*) => OpenConfigFile())
+}
+
+; ── "Log Firestone's windows" — the answer to "are my pins safe?" ────────────
+;
+; THE PROBLEM THIS EXISTS TO SOLVE. This script decides what may be seen from a
+; single title: CFG.fsVisibleTitles, whose only member is "Firestone -
+; Overlays". Anything else Overwolf puts on screen while the F3 lock is on is
+; treated as a desktop surface and concealed. That is the right default -- it is
+; what stops stray CEF frames and nag popups appearing -- but it means the
+; script's safety for a PINNED overlay panel depends entirely on a fact the
+; script cannot discover for itself: whether that panel is part of the
+; "Firestone - Overlays" window, or a separate OS window with its own title.
+;
+; If it is part of the overlay, everything here is safe. If it is a separate
+; window, three things can happen to it, and they need different fixes:
+;   * it is cloaked at birth and never released (helper-shaped, so the sweep
+;     skips it -- and skipping it also skips the release),
+;   * it is cloaked and re-cloaked on every sweep (not helper-shaped),
+;   * it is CLOSED, if it happens to be titled exactly "Firestone" and measures
+;     between 300 and 800 pixels on both sides, because that is the shape test
+;     for Firestone's notification popup.
+;
+; Rather than guess between them and risk breaking the popup suppression, this
+; records the evidence. Pin a comp, click this, and the log gets one line per
+; Overwolf window with everything needed to tell those cases apart: the title,
+; the class, the size, whether it is owned, and the extended styles -- 0x80 is
+; WS_EX_TOOLWINDOW (helper-shaped), 0x20 is WS_EX_TRANSPARENT (click-through,
+; which exempts it from the popup test), 0x8 is WS_EX_TOPMOST.
+;
+; Reads only. It cannot move, hide, show or close anything.
+LogFirestoneWindows() {
+    global State, _fsParked, _fsHiddenByUs
+    count := 0
+    hsHwnd := 0
+    try {
+        for h in GetHSRealWindows() {
+            hsHwnd := h
+            break
+        }
+    }
+    _FSLog("FS-INVENTORY ---- begin (locked=" . (State.fsMainLocked ? 1 : 0)
+         . " hsRunning=" . (GetHSPID() ? 1 : 0) . ") ----")
+    prev     := A_DetectHiddenWindows
+    prevMode := A_TitleMatchMode
+    DetectHiddenWindows true
+    SetTitleMatchMode(2)
+    try {
+        for exe in ["Overwolf.exe", "OverwolfBrowser.exe", "OverwolfHelper.exe"] {
+            for h in WinGetList("ahk_exe " . exe) {
+                try {
+                    ttl := "", cls := "", ex := 0, st := 0
+                    try ttl := WinGetTitle("ahk_id " . h)
+                    try cls := WinGetClass("ahk_id " . h)
+                    try ex  := WinGetExStyle("ahk_id " . h)
+                    try st  := WinGetStyle("ahk_id " . h)
+                    WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " . h)
+                    owner := DllCall("user32\GetWindow", "Ptr", h, "UInt", 4, "Ptr")   ; GW_OWNER
+
+                    ; Would the popup test close this window right now? This is
+                    ; the single most important field: a "1" here on a pinned
+                    ; panel is the whole answer.
+                    popupShaped := 0
+                    try popupShaped := IsFirestoneNotificationPopup(h, ttl) ? 1 : 0
+
+                    count++
+                    _FSLog("FS-INVENTORY " . exe . " hwnd=" . h
+                         . " title=`"" . ttl . "`""
+                         . " class=" . cls
+                         . " size=" . ww . "x" . wh . " at " . wx . "," . wy
+                         . " visible=" . (DllCall("user32\IsWindowVisible", "Ptr", h) ? 1 : 0)
+                         . " cloaked=" . (IsWindowCloakedDWM(h) ? 1 : 0)
+                         . " parked=" . (_fsParked.Has(h) ? 1 : 0)
+                         . " ourLedger=" . (_fsHiddenByUs.Has(h) ? 1 : 0)
+                         . " owned=" . (owner ? 1 : 0)
+                         . " ex=0x" . Format("{:X}", ex)
+                         . " style=0x" . Format("{:X}", st)
+                         . " popupShaped=" . popupShaped
+                         . " overHS=" . (hsHwnd ? (_RectsOverlapHwnd(h, hsHwnd) ? 1 : 0) : "?"))
+                }
+            }
+        }
+    }
+    DetectHiddenWindows prev
+    SetTitleMatchMode prevMode
+    _FSLog("FS-INVENTORY ---- end, " . count . " window(s) ----")
+    BgHUD.Show(count . " Firestone/Overwolf window(s) written to HSBG.log", 4000)
+}
+
+; Do two windows' rectangles overlap at all? Read-only helper for the inventory.
+_RectsOverlapHwnd(a, b) {
+    try {
+        WinGetPos(&ax, &ay, &aw, &ah, "ahk_id " . a)
+        WinGetPos(&bx, &by, &bw, &bh, "ahk_id " . b)
+        if (aw <= 0 || ah <= 0 || bw <= 0 || bh <= 0)
+            return false
+        return !(ax >= bx + bw || bx >= ax + aw || ay >= by + bh || by >= ay + ah)
+    }
+    return false
 }
 
 OpenConfigFile() {
