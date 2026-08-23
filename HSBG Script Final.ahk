@@ -719,6 +719,26 @@ global CFG := {
                                        ; The deferral mechanism is kept, and can
                                        ; be re-enabled by setting a value here --
                                        ; but anything non-zero risks this again.
+    fsPopupRekillMs:         2000,     ; how long after a WM_CLOSE before the
+                                       ; notification popup may be asked to
+                                       ; close AGAIN.
+                                       ;
+                                       ; It needs to be asked again because the
+                                       ; close is not guaranteed to work:
+                                       ; EnsureFirestoneSettings enables
+                                       ; close-to-tray, which can turn WM_CLOSE
+                                       ; into "the window survives". The old
+                                       ; code treated one attempt as final and
+                                       ; then ignored the survivor forever --
+                                       ; including never re-cloaking it, which
+                                       ; is how a closed popup ended up visible
+                                       ; again later.
+                                       ;
+                                       ; Concealment is re-asserted on EVERY
+                                       ; sighting regardless of this value; the
+                                       ; cooldown throttles only the WM_CLOSE,
+                                       ; so a window that ignores the message
+                                       ; is not sent one at sweep rate.
     fsLaunchArmSettleMs:     50,       ; reduced from 250ms to arm suppressors faster
                                        ; the suppressors now have a very short
                                        ; settle before Firestone starts.
@@ -4434,10 +4454,26 @@ OWCreateHookProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, d
         ; fix); release cloak and shield here at event speed. Worst case
         ; under event lag is a one-frame LATE appearance (invisible ->
         ; visible), imperceptible -- unlike the old wrong-visible frame.
-        if (IsFirestoneSuppressionTitle(title) && !State.fsMainLocked) {
+        ; IsFirestoneAppTitle is here for the same reason it is in FSRevealTick:
+        ; a Firestone window that is not Main or Battlegrounds -- Settings, most
+        ; often -- is concealed by the lock like everything else, so while the
+        ; lock is OFF it must be released like everything else. Without it, a
+        ; Settings window shown by Overwolf during an unlocked stretch stayed
+        ; parked and cloaked from the previous locked era.
+        if ((IsFirestoneSuppressionTitle(title) || IsFirestoneAppTitle(title))
+         && !State.fsMainLocked) {
             if _fsAlphaApplied.Has(hwnd)
                 _ClearFSAlphaShield(hwnd)
             _FSReleaseSurface(hwnd)       ; unpark first, then uncloak
+            ; The user is looking at this window RIGHT NOW, so from here on its
+            ; rectangle is a position they chose. _FSUnparkWindow sets the same
+            ; flag, but only for a window it actually un-parks -- and a window
+            ; shown for the first time while the lock is OFF was never parked,
+            ; so nothing else would record that it has been seen. Without this,
+            ; the first F3 lock/unlock cycle after opening it would treat its
+            ; rectangle as an unseen birth position and re-centre it on the
+            ; primary monitor, throwing away where the user had put it.
+            _fsEverShown[hwnd] := true
             return
         }
 
@@ -4977,6 +5013,38 @@ IsFirestoneBattlegroundsTitle(title) {
     return (title = "Firestone - Battlegrounds")
 }
 
+; ── Any OTHER Firestone desktop window ("Firestone - Settings" and friends) ──
+;
+; THE BUG THIS EXISTS TO CLOSE: F3 concealed by title and revealed by a
+; DIFFERENT, SHORTER list of titles. The lock's allow-list is "everything that
+; is not Firestone - Overlays gets concealed"; the reveal's list was the two
+; hard-coded names Main and Battlegrounds. Every other Firestone window --
+; Settings above all, but equally anything Firestone adds in a later build --
+; fell in the gap: concealed by the lock, and then not on the list of things
+; the unlock knows how to bring back. Open Settings, press F3 twice, and it is
+; gone for the rest of the session with no way to reach it. That is the exact
+; failure mode this script's own iron rule is written against -- "nothing is
+; ever cloaked, parked or hidden without a janitor guaranteed to run".
+;
+; Matched by PREFIX rather than by name, deliberately. A fixed list is what
+; created the gap, and it would create it again the next time Firestone ships
+; a window. "Firestone - " is unambiguous: Overwolf's own surfaces are titled
+; "Overwolf ...", "OverWolf Server", "Hidden Window" or nothing at all, and
+; another Overwolf app's windows carry that app's name.
+;
+; Two exclusions, both because the window already has an owner:
+;   * Firestone - Overlays is on CFG.fsVisibleTitles and must never be
+;     concealed at all, so it must never be parked or revealed by this path.
+;   * Firestone - Loading is Main's own HWND before it is renamed, and has a
+;     dedicated suppressor that runs through the launch.
+IsFirestoneAppTitle(title) {
+    if (title = "")
+        return false
+    if (title = "Firestone - Overlays" || title = "Firestone - Loading")
+        return false
+    return (SubStr(title, 1, 12) = "Firestone - ")
+}
+
 ; Matches the "Firestone" notification popup (e.g. "Your abilities are ready!")
 ; ══════════════════════════════════════════════════════════════════════════════
 ;  THE NOTIFICATION POPUP IS KILLED, NOT MANAGED
@@ -5030,17 +5098,99 @@ _FSMainWindowPresent(excludeHwnd := 0) {
 }
 
 global _fsPopupKilled    := Map()
+; hwnd -> how many times we have asked this popup to close. Only used to keep
+; the log honest and bounded when a window refuses to go (see close-to-tray).
+global _fsPopupKillCount := Map()
 
 global _fsPopupFirstSeen := Map()   ; hwnd -> first sighting, for the grace
+
+; Move the notification popup entirely off the virtual desktop.
+;
+; A DWM-cloaked window is not drawn, but it is still THERE: it still hit-tests,
+; so it still swallows every mouse click that lands on it. A popup left cloaked
+; in the middle of the screen over Hearthstone is an invisible sheet of glass
+; over the board -- the user clicks the game and nothing happens, with nothing
+; on screen to explain why.
+;
+; Deliberately a bare SetWindowPos rather than _FSParkWindow: parking RECORDS
+; the window in _fsParked so F3 can restore it, and this window must NEVER be
+; restored -- it is waiting to be closed. No ledger entry, nothing to bring it
+; back, and no clicks intercepted while it waits.
+;
+; Its own function because three places now need it: the "cannot yet prove it
+; is not Main" branch, the re-assert for a popup that survived its close, and
+; the stranded-window repair, which has to be able to recognise this window and
+; put it straight back rather than rescuing it onto the desktop.
+_FSParkNotificationPopup(hwnd) {
+    try {
+        vx := SysGet(76), vy := SysGet(77)
+        vw := SysGet(78), vh := SysGet(79)
+        DllCall("user32\SetWindowPos", "Ptr", hwnd, "Ptr", 0
+            , "Int", vx + vw + 2000, "Int", vy + vh + 2000
+            , "Int", 0, "Int", 0
+            , "UInt", 0x0001 | 0x0004 | 0x0010)  ; NOSIZE|NOZORDER|NOACTIVATE
+    }
+}
+
+; ── CONCEALMENT IS ALWAYS ALLOWED. CLOSING ALMOST NEVER IS. ──────────────────
+;
+; The whole popup subsystem turns on one asymmetry, which this script states in
+; _FSKillNotificationPopup and then does not always act on: "Concealment is
+; reversible and costs nothing if the judgement is wrong; closing is neither."
+;
+; Every guard protecting Firestone Main from being closed is therefore a guard
+; about CLOSING. None of them is a reason to leave a window PAINTING. Where a
+; guard says "I cannot prove this is safe to close", the correct action is not
+; to walk away -- it is to close nothing and make sure the window is invisible
+; regardless, and to do that on a timer that has no opinion about F3.
+;
+; That distinction is the difference between "the popup is still on screen
+; because the sweeper declined to act" and "the popup is invisible and will be
+; closed if and when it can be proven safe". This function is the second half.
+_FSConcealNotificationPopup(hwnd) {
+    try {
+        CloakWindow(hwnd)
+        _DisableDWMTransitions(hwnd)
+        _FSParkNotificationPopup(hwnd)
+    }
+}
+
 _FSKillNotificationPopup(hwnd, why) {
-    global _fsPopupKilled, _fsPopupFirstSeen, _fsMainCandidate
+    global _fsPopupKilled, _fsPopupFirstSeen, _fsMainCandidate, _fsPopupKillCount
 
     global _fsMainEverOpened, CFG
     try {
         if _fsMainCandidate.Has(hwnd)      ; it is, or becomes, Main: never
             return false
-        if _fsPopupKilled.Has(hwnd)        ; asked once is enough
+
+        ; ── "WE ASKED IT TO CLOSE" IS NOT "IT CLOSED". ─────────────────────
+        ;
+        ; This guard used to be an unconditional `return false`, and that is
+        ; the bug behind "the popup appeared when I pressed F3".
+        ;
+        ; EnsureFirestoneSettings turns Firestone's close-to-tray ON. That is
+        ; deliberate and documented above -- it is what stops a stray WM_CLOSE
+        ; destroying Firestone Main. The side effect is that WM_CLOSE is no
+        ; longer guaranteed to destroy the NOTIFICATION either: the window can
+        ; survive the close it was sent. The moment it did, this early return
+        ; made the survivor permanently untouchable -- never re-cloaked, never
+        ; moved back off the desktop, never asked to close again. DWM drops a
+        ; cloak on various window operations and Overwolf re-shows its own
+        ; windows freely, so a survivor eventually uncloaks itself, and from
+        ; then on it is simply a visible nag popup that this script has
+        ; promised never to look at again.
+        ;
+        ; So the ledger now throttles the CLOSE only. Concealment is re-asserted
+        ; on every sighting for as long as the window exists, which is the same
+        ; rule every other concealed window in this script lives by: ask the
+        ; window, not the ledger. A window that really did close is gone from
+        ; the enumeration and costs nothing.
+        killedAt := _fsPopupKilled.Get(hwnd, 0)
+        if (killedAt && A_TickCount - killedAt < CFG.fsPopupRekillMs) {
+            ; Inside the cooldown: re-assert concealment, do not re-ask.
+            _FSConcealNotificationPopup(hwnd)
             return false
+        }
 
         ; ── THE STRUCTURAL GUARD. DO NOT REMOVE IT AGAIN. ──────────────────
         ; A bare-"Firestone" window may only be closed while a SEPARATE window
@@ -5112,19 +5262,10 @@ _FSKillNotificationPopup(hwnd, why) {
             ; the user clicks the game and nothing happens, with nothing on
             ; screen to explain why.
             ;
-            ; So it is also moved off the virtual desktop. Deliberately a bare
-            ; SetWindowPos rather than _FSParkWindow: parking RECORDS the
-            ; window so it can be restored, and this window must never be
-            ; restored -- it is waiting to be closed. No ledger entry, nothing
-            ; to bring it back, and no clicks intercepted while it waits.
-            try {
-                vx := SysGet(76), vy := SysGet(77)
-                vw := SysGet(78), vh := SysGet(79)
-                DllCall("user32\SetWindowPos", "Ptr", hwnd, "Ptr", 0
-                    , "Int", vx + vw + 2000, "Int", vy + vh + 2000
-                    , "Int", 0, "Int", 0
-                    , "UInt", 0x0001 | 0x0004 | 0x0010)  ; NOSIZE|NOZORDER|NOACTIVATE
-            }
+            ; So it is also moved off the virtual desktop. See
+            ; _FSParkNotificationPopup for why that is a bare SetWindowPos and
+            ; not _FSParkWindow.
+            _FSParkNotificationPopup(hwnd)
             _FSLog("FS-POPUP cloaked and moved off-screen, not yet closed,"
                  . " hwnd=" . hwnd . " at " . why . " -- cannot yet prove it is"
                  . " not Firestone Main. It is invisible AND cannot intercept"
@@ -5134,10 +5275,37 @@ _FSKillNotificationPopup(hwnd, why) {
 
         _fsPopupKilled[hwnd] := A_TickCount
         _CloseWindowAsync(hwnd)
+
+        ; Park it in the same breath as the close request. _CloseWindowAsync is
+        ; asynchronous by design, so between the request and the window actually
+        ; going away there is a stretch in which it is still on the desktop --
+        ; and if close-to-tray swallows the message, that stretch is the rest of
+        ; the session. Parking costs one SetWindowPos and makes the difference
+        ; invisible either way.
+        _FSParkNotificationPopup(hwnd)
+
+        ; Attempt counter, purely so the log stays useful without becoming a
+        ; flood. Attempt 1 is the normal case and is what the log has always
+        ; recorded. Attempt 2 is the one worth shouting about -- it means
+        ; WM_CLOSE did not take, which is the close-to-tray interaction. After
+        ; that the retries are silent: they continue on the cooldown, but a line
+        ; every couple of seconds for the rest of the session would bury
+        ; everything else in the file.
+        n := _fsPopupKillCount.Get(hwnd, 0) + 1
+        _fsPopupKillCount[hwnd] := n
         w := 0, h := 0
         try WinGetPos(, , &w, &h, "ahk_id " . hwnd)
-        _FSLog("FS-POPUP killed at " . why . " hwnd=" . hwnd
-             . " size=" . w . "x" . h . " -- cloaked and closed on sight")
+        if (n = 1)
+            _FSLog("FS-POPUP killed at " . why . " hwnd=" . hwnd
+                 . " size=" . w . "x" . h . " -- cloaked, parked off-screen"
+                 . " and closed on sight")
+        else if (n = 2)
+            _FSLog("FS-POPUP hwnd=" . hwnd . " SURVIVED its close and is being"
+                 . " asked again (attempt " . n . ", at " . why . ")."
+                 . " Firestone's close-to-tray setting can turn WM_CLOSE into"
+                 . " 'the window stays'. It is cloaked and parked off the"
+                 . " desktop throughout, so it is not on screen either way;"
+                 . " further attempts are not logged.")
         return true
     }
     return false
@@ -5262,8 +5430,34 @@ CloseFirestoneNotificationPopups() {
                     title := ow.title
                     if !IsFirestoneNotificationPopup(h, title)
                         continue
-                    if !fsMainPresent                       ; guard 2
-                        continue
+
+                    ; ── GUARD 2 IS GONE, AND THIS IS WHY ──────────────────────
+                    ; It read `if !fsMainPresent continue`: refuse to act unless
+                    ; a SEPARATE window titled exactly "Firestone - Main" exists
+                    ; right now.
+                    ;
+                    ; _FSKillNotificationPopup already makes that exact decision,
+                    ; and makes it correctly. Its own header explains why the
+                    ; one-way form was wrong and was replaced: "requiring (a)
+                    ; alone was too strict: a notification arriving while Main is
+                    ; closed could then never be closed at all, which is the
+                    ; 'popup was not closed' report." So it now accepts EITHER a
+                    ; present Main OR the bare-"Firestone" title held past
+                    ; CFG.fsPopupGraceMs.
+                    ;
+                    ; That fix went into the callee and this caller kept the old,
+                    ; stricter copy in front of it -- so on any session where the
+                    ; window never carries the literal title "Firestone - Main",
+                    ; this backstop never even called the function that knows how
+                    ; to handle the case. A full session's log with a nag popup
+                    ; visible on screen contains not one "FS-POPUP killed" line
+                    ; and dozens of "not yet closed": this guard is the reason.
+                    ;
+                    ; Nothing is loosened by removing it. The Main check still
+                    ; runs, one level down, as the FAST path -- plus the absolute
+                    ; _fsMainCandidate identity ledger, the size envelope, the
+                    ; minimize guard and the size-stability pass below.
+                    ;
                     ; guard 3 -- identity. An HWND that has ever carried the "Firestone - Loading"
                     ; or "Firestone - Main" title can never be closed here, whatever it is titled
                     ; now.
@@ -5275,8 +5469,32 @@ CloseFirestoneNotificationPopups() {
                         continue
                     if (WinGetMinMax("ahk_id " . h) = -1)   ; guard 4
                         continue
-                    if _fsAlphaApplied.Has(h)               ; guard 3b
+                    ; guard 3b -- LEFT AT FULL STRENGTH, ON PURPOSE.
+                    ;
+                    ; This was briefly relaxed to test the map's VALUE rather
+                    ; than the presence of the key, on the reasoning that with
+                    ; CFG.fsUseAlphaShield off every window the funnel touches
+                    ; gets a key written, so the guard fires for everything.
+                    ; That reasoning is correct as far as it goes -- and it is
+                    ; not worth acting on, because what sits behind this guard
+                    ; is a WM_CLOSE, and a WM_CLOSE aimed at the wrong window
+                    ; has already cost this user a Firestone session: three
+                    ; windows measuring 780x620 and titled "Firestone" were
+                    ; closed in two seconds while Firestone Main was open.
+                    ;
+                    ; Real Firestone UI does appear inside the popup's size
+                    ; envelope carrying the popup's title. Until the tray item
+                    ; "Log Firestone's windows" says which windows those are,
+                    ; every existing brake on closing stays on.
+                    ;
+                    ; What changes is only what happens when the brake engages.
+                    ; Declining to CLOSE is not a reason to let the window
+                    ; PAINT: conceal it and move on, so a popup this guard
+                    ; protects is invisible rather than on screen.
+                    if _fsAlphaApplied.Has(h) {             ; guard 3b
+                        _FSConcealNotificationPopup(h)
                         continue
+                    }
 
                     wNow := 0, hNow := 0
                     try WinGetPos(, , &wNow, &hNow, "ahk_id " . h)
@@ -5285,6 +5503,13 @@ CloseFirestoneNotificationPopups() {
                      || _fsNotifFirstMatch[h].w != wNow
                      || _fsNotifFirstMatch[h].h != hNow) {
                         _fsNotifFirstMatch[h] := {t: A_TickCount, w: wNow, h: hNow}
+                        ; Same rule as guard 3b: this pass is not yet willing to
+                        ; close the window, which says nothing about whether it
+                        ; may be seen. Conceal it now, on this lock-independent
+                        ; 750 ms timer, so a popup is invisible from the first
+                        ; sweep that recognises it rather than from whenever the
+                        ; F3-gated funnel next happens to run.
+                        _FSConcealNotificationPopup(h)
                         continue
                     }
                     ; NO STABILITY WAIT. This sweep is now a BACKSTOP: the
@@ -6608,6 +6833,11 @@ global _fsPaintHits      := Map()   ; hwnd -> consecutive passing probes
 global _fsColdSince      := Map()   ; hwnd -> tick we first suppressed it cold
 global _fsParked         := Map()   ; hwnd -> true: currently parked off-screen
 global _fsParkedRect     := Map()   ; hwnd -> {x,y,w,h} where it was before
+; hwnd -> true once this window has been on screen for the user at least once.
+; It is what separates "the rectangle Overwolf happened to give this window
+; before anyone saw it" from "the position the user chose". See
+; _FSUnparkWindow.
+global _fsEverShown      := Map()
 global _fsParkCycles     := Map()   ; hwnd -> park/unpark cycles performed
 global _fsProbeGaveUp    := Map()   ; hwnd -> probing stopped (stays COLD)
 ; Windows the sweep cloaked at birth and later disowned, released once each.
@@ -6753,8 +6983,18 @@ _FSMayPark(hwnd, title) {
     }
 
     ; Positively-identified Firestone app windows: always parkable.
+    ;
+    ; IsFirestoneAppTitle covers the rest of the family -- Settings and anything
+    ; else titled "Firestone - X". They were previously left to the cloak alone,
+    ; which is worse for them in two ways: a cloaked window still HIT-TESTS, so
+    ; an invisible Settings window sitting over the board swallows clicks the
+    ; user aims at the game; and a cloak has no recorded rectangle, so there was
+    ; nothing for the reveal to restore them from. Parking gives them the same
+    ; treatment Main and Battlegrounds get: off the desktop entirely, rectangle
+    ; remembered, and handed back exactly where they were.
     if (title = "Firestone - Main" || title = "Firestone - Loading"
-     || title = "Firestone - Battlegrounds" || title = "Firestone")
+     || title = "Firestone - Battlegrounds" || title = "Firestone"
+     || IsFirestoneAppTitle(title))
         return true
 
     ; ── NOTHING UNNAMED IS EVER PARKED. ────────────────────────────────────
@@ -6836,7 +7076,7 @@ _FSParkWindow(hwnd) {
 ; one no longer lands on a monitor (display layout changed while parked).
 ; Never activates, never resizes.
 _FSUnparkWindow(hwnd) {
-    global _fsParked, _fsParkedRect, CFG, ChosenMonIdx
+    global _fsParked, _fsParkedRect, CFG, ChosenMonIdx, _fsEverShown
     if !_fsParked.Has(hwnd)
         return false
     _MapDrop(_fsParked, hwnd)
@@ -6850,6 +7090,26 @@ _FSUnparkWindow(hwnd) {
 
         nx := "", ny := ""
 
+        ; ── THE FIRST TIME A WINDOW IS SHOWN, IT IS CENTRED ─────────────────
+        ; ...on the PRIMARY monitor, and only that first time.
+        ;
+        ; The rectangle below is recorded by _FSParkWindow at the window's FIRST
+        ; park -- which happens at its birth, seconds into the launch, while it
+        ; is still being concealed and long before anyone has looked at it. So
+        ; on the very first reveal the "remembered position" is not a position
+        ; the user chose at all: it is wherever Overwolf dropped a newborn
+        ; window, which is arbitrary and routinely lands on the monitor the game
+        ; is about to fill.
+        ;
+        ; Distinguishing the two is the whole job here. Before the window has
+        ; ever been on screen there is no user position to preserve, so it is
+        ; opened centred on the primary monitor. From the moment it HAS been on
+        ; screen the recorded rectangle means what the code below assumes it
+        ; means, and it is honoured exactly as before -- move Main to the second
+        ; screen, toggle F3, and it comes back where you left it.
+        firstOpen := !_fsEverShown.Has(hwnd)
+        _fsEverShown[hwnd] := true
+
         ; ── A window returns to where it was ────────────────────────────────
         ; Firestone's windows are not pinned to the launch monitor. They are the ones
         ; read while playing, so they belong wherever the user put them -- typically a
@@ -6860,7 +7120,7 @@ _FSUnparkWindow(hwnd) {
         ; CFG.fsFollowMonitorLock := true pins them with everything else.
         ; lockWindowsToChosenMonitor deliberately does not govern this; it still
         ; governs Battle.net, the Agent, Hearthstone and the HUD.
-        if !CFG.fsFollowMonitorLock {
+        if (!CFG.fsFollowMonitorLock && !firstOpen) {
             if _fsParkedRect.Has(hwnd) {
                 o := _fsParkedRect[hwnd]
                 _MapDrop(_fsParkedRect, hwnd)
@@ -6876,6 +7136,9 @@ _FSUnparkWindow(hwnd) {
             _MapDrop(_fsParkedRect, hwnd)
         }
         if (nx = "") {
+            ; firstOpen forces the PRIMARY monitor. fsFollowMonitorLock is the
+            ; opt-in that pins Firestone to the session monitor with everything
+            ; else, so it still wins when someone has deliberately set it.
             idx := (CFG.fsFollowMonitorLock && CFG.lockWindowsToChosenMonitor
                  && ChosenMonIdx)
                  ? ChosenMonIdx : MonitorGetPrimary()
@@ -6884,6 +7147,52 @@ _FSUnparkWindow(hwnd) {
             nx := (w > 0 && w <= waW) ? waL + (waW - w) // 2 : waL
             ny := (h > 0 && h <= waH) ? waT + (waH - h) // 2 : waT
         }
+        DllCall("user32\SetWindowPos", "Ptr", hwnd, "Ptr", 0
+            , "Int", nx, "Int", ny, "Int", 0, "Int", 0
+            , "UInt", 0x0001 | 0x0004 | 0x0010)   ; NOSIZE|NOZORDER|NOACTIVATE
+        return true
+    }
+    return false
+}
+
+; ── Centre a window on the primary monitor ───────────────────────────────────
+;
+; The same arithmetic _FSUnparkWindow uses for a window it is bringing back for
+; the first time, in a form the REVEAL can call directly.
+;
+; It needs to exist separately because the unpark is not the only way a
+; Firestone window reaches the screen, and "first open is centred" has to be
+; true however it got there. A window concealed by the PARK comes back through
+; _FSUnparkWindow and is centred there. A window concealed by the SW_HIDE exit
+; -- which is what Firestone Main takes whenever _FSMayPark declines it, and
+; what the birth-hide ledger produces -- is never un-parked at all: it is simply
+; shown again, wherever it happens to sit. Centring only in the unpark therefore
+; centred Battlegrounds reliably and Main only sometimes, which is exactly the
+; inconsistency being reported.
+;
+; NOSIZE, so nothing is resized: the two windows are centred independently and
+; are free to overlap each other, which is the intended result rather than a
+; side effect -- they are separate windows the user drags apart if they want to.
+_FSCenterOnPrimary(hwnd) {
+    global CFG, ChosenMonIdx
+    try {
+        rc := Buffer(16, 0)
+        if !DllCall("user32\GetWindowRect", "Ptr", hwnd, "Ptr", rc)
+            return false
+        w := NumGet(rc, 8, "Int") - NumGet(rc, 0, "Int")
+        h := NumGet(rc, 12, "Int") - NumGet(rc, 4, "Int")
+        if (w < 100 || h < 100)
+            return false
+
+        ; fsFollowMonitorLock is the opt-in that pins Firestone to the session
+        ; monitor with everything else; it still wins where someone has set it.
+        idx := (CFG.fsFollowMonitorLock && CFG.lockWindowsToChosenMonitor
+             && ChosenMonIdx)
+             ? ChosenMonIdx : MonitorGetPrimary()
+        _SafeWorkArea(idx, &waL, &waT, &waR, &waB)
+        waW := waR - waL, waH := waB - waT
+        nx := (w <= waW) ? waL + (waW - w) // 2 : waL
+        ny := (h <= waH) ? waT + (waH - h) // 2 : waT
         DllCall("user32\SetWindowPos", "Ptr", hwnd, "Ptr", 0
             , "Int", nx, "Int", ny, "Int", 0, "Int", 0
             , "UInt", 0x0001 | 0x0004 | 0x0010)   ; NOSIZE|NOZORDER|NOACTIVATE
@@ -6967,6 +7276,29 @@ FSRepairStrandedWindows() {
                     ; the screenshot.
                     if _fsParked.Has(h)
                         continue
+
+                    ; ── THE NOTIFICATION POPUP IS OFF-SCREEN ON PURPOSE ─────
+                    ; and it is NOT in _fsParked, deliberately: it has no
+                    ; ledger entry precisely so that nothing can restore it.
+                    ; This repair was the one thing that did anyway. It walks
+                    ; the same processes, sees a window outside the virtual
+                    ; desktop, and "rescues" it -- taskbar button and all --
+                    ; straight onto the monitor the user is playing on.
+                    ;
+                    ; StartFSReveal calls this function, so that is exactly
+                    ; why a nag popup would appear on an F3 press: the popup
+                    ; had never actually closed, it was parked off-screen
+                    ; waiting, and F3 fetched it back. The popup was never
+                    ; meant to have anything to do with F3.
+                    ;
+                    ; Hand it to the closer instead and leave it where it is.
+                    tPop := ""
+                    try tPop := WinGetTitle("ahk_id " . h)
+                    if IsFirestoneNotificationPopup(h, tPop) {
+                        _FSKillNotificationPopup(h, "stranded sweep")
+                        continue
+                    }
+
                     _fsTabRemoved[h] := true      ; force the restore below
                     _FSTabOn(h)
                     ; Rescued windows go to the chosen monitor, not the primary. This function
@@ -9368,7 +9700,7 @@ StopFSReveal() {
 FSRevealTick() {
     global _fsRevealActive, _fsRevealUntil, _fsRevealedMainAt, State, _fsEverPainted
     global _fsRevealFirstSeen, _fsRevealSettleReq, _fsRevealNudged, _fsHiddenByUs, CFG, _fsRevealFg
-    global _fsRevealDone, _fsRevealSettled, _fsMainCandidate
+    global _fsRevealDone, _fsRevealSettled, _fsMainCandidate, _fsParked, _fsEverShown
 
     if !_fsRevealActive {
         SetTimer(FSRevealTick, 0)
@@ -9385,7 +9717,14 @@ FSRevealTick() {
             for h in WinGetList("ahk_exe " . exe) {
                 try {
                     title := WinGetTitle("ahk_id " . h)
-                    if !(IsFirestoneMainTitle(title) || IsFirestoneBattlegroundsTitle(title))
+                    ; IsFirestoneAppTitle: the lock conceals every Firestone
+                    ; window, so the unlock has to be able to bring every
+                    ; Firestone window back. Matching only Main and
+                    ; Battlegrounds here left Settings (and any window a later
+                    ; Firestone build adds) concealed with nothing that could
+                    ; restore it -- see IsFirestoneAppTitle.
+                    if !(IsFirestoneMainTitle(title) || IsFirestoneBattlegroundsTitle(title)
+                      || IsFirestoneAppTitle(title))
                         continue
 
                     if !_fsRevealFirstSeen.Has(h)
@@ -9394,8 +9733,16 @@ FSRevealTick() {
                     if !DllCall("IsWindow", "Ptr", h)
                         continue
 
+                    ; The size gate rejects half-built and placeholder windows.
+                    ; It must NOT reject a window this script has parked: parked
+                    ; means off the virtual desktop with no taskbar button, so
+                    ; skipping it here is the one way the reveal can leave a
+                    ; window permanently unreachable -- and the reveal is the
+                    ; janitor that park depends on. Anything in _fsParked is by
+                    ; definition ours and by definition needs bringing back,
+                    ; whatever GetWindowPlacement says about its size.
                     _GetRestoredSize(h, &rw, &rh)
-                    if (rw < 300 || rh < 300)
+                    if ((rw < 300 || rh < 300) && !_fsParked.Has(h))
                         continue
 
                     if (_fsRevealSettleReq && (A_TickCount - _fsRevealFirstSeen[h] < _fsRevealSettleReq))
@@ -9435,6 +9782,22 @@ FSRevealTick() {
                         _fsMainCandidate[h] := true
                         _ClearFSAlphaShield(h)
                         _FSReleaseSurface(h)
+
+                        ; ── FIRST OPEN IS CENTRED, WHATEVER CONCEALED IT ────
+                        ; _FSReleaseSurface has just run, so a window that was
+                        ; PARKED has already been centred by _FSUnparkWindow and
+                        ; has already had this flag set -- this is a no-op for
+                        ; it. What reaches here unflagged is the other half:
+                        ; windows concealed by the SW_HIDE exit or by a cloak
+                        ; alone, which no un-park ever touches. Both Main and
+                        ; Battlegrounds can take either route depending on
+                        ; whether they had proven they paint yet, which is why
+                        ; centring was landing for one and not the other.
+                        if !_fsEverShown.Has(h) {
+                            _fsEverShown[h] := true
+                            _FSCenterOnPrimary(h)
+                        }
+
                         _FSLog("FS-REVEAL title=`"" . title . "`" painted="
                              . (_FSIsWarm(h) ? "yes" : "NOT PROVEN")
                              . " visible="
@@ -9480,7 +9843,39 @@ FSRevealTick() {
                             DllCall("user32\SetWindowPos", "Ptr", h, "Ptr", -1
                                 , "Int", 0, "Int", 0, "Int", 0, "Int", 0
                                 , "UInt", 0x0001 | 0x0002 | 0x0010)  ; NOSIZE|NOMOVE|NOACTIVATE
-                            WinActivate("ahk_id " . h)
+
+                            ; ── NEVER TAKE THE FOREGROUND FROM HEARTHSTONE ──
+                            ;
+                            ; This is the "HS flashed to the other monitor"
+                            ; flicker, and the rule it breaks is stated three
+                            ; other times in this script: a borderless Unity
+                            ; window that loses the foreground RE-RUNS ITS
+                            ; DISPLAY-MODE SETUP and snaps to its remembered
+                            ; monitor. _BNetPinForeground guards on GetHSPID(),
+                            ; _BNetDwellMinimize guards on GetHSPID(), and
+                            ; _ForegroundFSIfSafe guards on WinActive. This
+                            ; site -- the one the user triggers by hand, many
+                            ; times a match -- guarded on nothing and called
+                            ; WinActivate straight into a running game. It
+                            ; flickered twice per F3 cycle, too: once when the
+                            ; reveal took the foreground, and again when the
+                            ; re-lock parked the window and Windows handed the
+                            ; foreground back.
+                            ;
+                            ; The TOPMOST pin above is kept, and it is the half
+                            ; that does the real work: HWND_TOPMOST puts the
+                            ; window above a borderless fullscreen game without
+                            ; touching the foreground at all. What is dropped is
+                            ; only the input focus, and clicking the window
+                            ; still gives it that in the normal way.
+                            ;
+                            ; GetHSPID() rather than "is HS active": if the game
+                            ; is running but the user is already on the desktop,
+                            ; HS does not hold the foreground and there is
+                            ; nothing to take from it -- but it is also the case
+                            ; where the pin alone is plainly enough.
+                            if !GetHSPID()
+                                WinActivate("ahk_id " . h)
                         }
                     }
 
@@ -9741,21 +10136,27 @@ _PrunePlacementMaps() {
     ; refuse to un-park a brand-new window that genuinely is parked.
     global _fsPaintState, _fsPaintProbeAt, _fsPaintHits, _fsColdSince
     global _fsParked, _fsParkedRect, _fsTabRemoved, _fsBirthReassert, _fsMainLogged
+    ; _fsEverShown MUST be pruned. Windows recycles HWNDs, so a stale entry
+    ; would make a brand-new Firestone window look like one the user has
+    ; already positioned -- and it would then open at the dead window's birth
+    ; rectangle instead of centred on the primary monitor.
+    global _fsEverShown
     global _fsParkCycles, _fsMainCandidate, _fsProbeGaveUp, _fsRevealDone
     global _fsRevealSettled, _fsExemptReleased, _fsOverlayRescued, _fsTransitionsOff
     ; The popup ledgers. Windows recycles HWNDs, so a stale entry here either
     ; skips a genuinely new popup (seen as already-killed) or instantly ages a
     ; brand-new window past the grace and closes a Main that is still forming.
-    global _fsPopupKilled, _fsPopupFirstSeen
+    global _fsPopupKilled, _fsPopupFirstSeen, _fsPopupKillCount
     for m in [_placeCreateSeen, _placeFirstSeen, _bnetFirstMoved, _fsAlphaApplied
             , _fsDeferredPopupCloak, _moveBudget, _fsHiddenByUs, _fsShieldDown, _fsEverPainted, _cloakState, _bnetHideDone
             , _fsBirthHidden, _fsMinLastAttempt, _fsRevealFg, _bnetPostMinCount, _qtHelperLogged
             , _fsFirstTitledAt
             , _fsPaintState, _fsPaintProbeAt, _fsPaintHits, _fsColdSince
             , _fsParked, _fsParkedRect, _fsTabRemoved, _fsBirthReassert, _fsMainLogged
+            , _fsEverShown
             , _fsParkCycles, _fsMainCandidate, _fsProbeGaveUp, _fsRevealDone
             , _fsRevealSettled, _fsExemptReleased, _fsOverlayRescued, _fsTransitionsOff
-            , _fsPopupKilled, _fsPopupFirstSeen] {
+            , _fsPopupKilled, _fsPopupFirstSeen, _fsPopupKillCount] {
         dead := []
         for h in m {
             if !DllCall("user32\IsWindow", "Ptr", h)
