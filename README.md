@@ -43,13 +43,30 @@ Two things are **on by default**, and both can be switched off in `HSBG Config.i
 - **`HotkeySoundFile`** — path to your own PCM `.wav`, played for every hotkey in place of the built-in note. Empty by default; a missing file falls back to the built-in tone.
 - **`HotkeyFreqMode`** — `singular` (default) gives every key the same pitch, set by **`HotkeyFreqSingular`** (`110.0` Hz). `varied` gives each key its own, set by **`HotkeyFreqF1`–`F4`** (`82.41`, `110.00`, `73.42`, `55.00` Hz).
 
-Change anything here, then use **"Reload settings"** in the tray menu to apply it without restarting. The file documents itself in comments too — see [Settings](#settings) for the full table.
+Every one of these is also documented in comments inside the file itself, and again under [Settings](#settings).
+
+### The tray menu
+
+HSBG has no window. It runs as an icon in the **system tray** — the small cluster at the right-hand end of the taskbar, next to the clock. Windows hides new tray icons by default, so click the **`^`** arrow there to reveal it: it is AutoHotkey's green **H**, and hovering it reads *Battle Grounds v9.0 — running*. Drag it down onto the taskbar to keep it permanently visible.
+
+**Right-click** that icon for the menu:
+
+| Menu item | What it does |
+|---|---|
+| **Open settings (HSBG Config.ini)** | Opens the settings file in Notepad. Use this rather than finding the file yourself — the script runs as administrator, so the editor it opens can actually save. |
+| **Reload settings** | Re-reads the file and applies your change straight away — everything in `HSBG Config.ini` is covered, so no restart. *Settings reloaded* flashes on screen when it lands. |
+| **Test hotkey sound** | Plays the note, and says on screen whether the script really read `HotkeyAudio=1` and which file it read it from. |
+| **What is under my cursor?**<br>**Log Firestone's windows** | Diagnostics for when clicks or windows misbehave — see [Troubleshooting](#troubleshooting). |
+| **Exit** | Stops HSBG and puts back what it changed. It sits below the separator, among AutoHotkey's own items. |
+
+So changing a setting is: right-click the tray icon → *Open settings* → edit the line → save and close Notepad → right-click again → *Reload settings*. That is the whole procedure.
 
 ---
 
 ## Contents
 
 - [What's on out of the box](#whats-on-out-of-the-box)
+- [The tray menu](#the-tray-menu)
 - [Hotkeys in detail](#hotkeys-in-detail)
 - [What it does with each application](#what-it-does-with-each-application)
 - [Settings](#settings)
@@ -143,7 +160,7 @@ Four applications are involved in a Battlegrounds session. Left alone they produ
 
 `HSBG Config.ini` sits next to the script. It is created on first run with every setting documented inside it as comments, so you never need to open the script — or this page — to change your mind. Delete it and it comes back with the defaults.
 
-**To edit it: right-click the tray icon → "Open settings".** That route matters. The script runs elevated, so the editor it opens is elevated too; if the file happens to live somewhere only an administrator can write, opening it any other way lets you make changes and then refuses to save them.
+**To edit it: right-click the tray icon → "Open settings".** ([Where the tray icon is.](#the-tray-menu)) That route matters. The script runs elevated, so the editor it opens is elevated too; if the file happens to live somewhere only an administrator can write, opening it any other way lets you make changes and then refuses to save them.
 
 | Setting | Default | Effect |
 |---|---|---|
@@ -155,9 +172,7 @@ Four applications are involved in a Battlegrounds session. Left alone they produ
 | `HotkeyFreqSingular` | `110.0` | Pitch in Hz used by every key in `singular` mode. |
 | `HotkeyFreqF1`–`F4` | `82.41`, `110.00`, `73.42`, `55.00` | Per-key pitches used in `varied` mode. Blank or `0` falls back to `HotkeyFreqSingular`. |
 
-Settings are read at start-up. Use **"Reload settings"** in the tray menu to apply a change without restarting.
-
-**The tray menu** also has *Open settings*, *Reload settings*, *Test hotkey sound*, and *What is under my cursor?* — the last of which names the window that will receive your next click, which is the fastest way to diagnose anything click-related.
+Settings are read at start-up. Use **"Reload settings"** in the [tray menu](#the-tray-menu) to apply a change without restarting.
 
 <details>
 <summary><b>About the built-in notes</b></summary>
