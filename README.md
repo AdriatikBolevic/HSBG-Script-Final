@@ -2,19 +2,20 @@
 
 **Skip combat animations with one key. Launch your whole session with another.**
 
-A single-file AutoHotkey v2 tool for Hearthstone Battlegrounds. Four keys, nothing to configure before you start besides optional features with on/off switches in the included config file. Obviously Requires AutoHotKey V2.
+A single-file AutoHotkey v2 tool for Hearthstone Battlegrounds. Four keys, nothing to configure before you start.
 
 | Key | What it does |
 |:---:|---|
 | **F1** | **Skip the combat animation.** The headline feature. Jump straight to the result of a fight instead of watching it play out. Nothing is lost — the match keeps resolving on Blizzard's servers and you rejoin at the outcome. |
-| **F2** | **Start the session.** Battle.net opens, presses Play, and tidies itself away. Hearthstone opens and takes the screen. Firestone comes up with it. One key, from nothing running to a loaded game. |
-| **F3** | **Show or hide Firestone's windows.** They stay out of your way until you want them. The in-game overlay is never touched. |
+| **F2** | **Start the session.** Battle.net opens, presses Play, and tidies itself away. Hearthstone opens and takes the screen. Your overlay comes up with it. One key, from nothing running to a loaded game. |
+| **F3** | **Show or hide your overlay.** Firestone's desktop windows, or the HSReplay tracker's on-screen overlay — whichever you're using this session. |
 | **F4** | **Shut it all down.** Closes the game, Battle.net and Overwolf, puts back everything the script changed, and exits. |
 
 ### Why you'd want it
 
 - **Combat skip.** Battlegrounds spends a large share of every game playing out fights you cannot influence. F1 gives that time back, one press at a time.
 - **One-key launch.** No clicking through a launcher, waiting, then remembering to start your tracker.
+- **Your tracker actually works.** HSBG runs as administrator, which means the Hearthstone it launches does too — and a tracker started any other way can't read an elevated game. That's the *"restart Hearthstone / run as administrator"* message. HSBG starts the tracker itself, at a matching level, and the message never appears.
 - **Windows where you want them.** Everything opens on the monitor you started the script from, and the clutter you never asked for — Battle.net's splash and login shells, Firestone's nag popups — simply never appears.
 - **Nothing to set up.** Sensible defaults, a settings file that writes itself, and a tray menu for the two things worth changing.
 
@@ -26,7 +27,7 @@ A single-file AutoHotkey v2 tool for Hearthstone Battlegrounds. Four keys, nothi
 
 That is the whole of it. Everything below is detail for when you want it.
 
-**Requirements** · Windows 10/11 · AutoHotkey v2.0 · Administrator rights (for F1's firewall rule and for pausing the Windows Search indexer) · Firestone is **optional** — without it, everything else works normally.
+**Requirements** · Windows 10/11 · AutoHotkey v2.0 · Administrator rights (for F1's firewall rule and for pausing the Windows Search indexer) · An overlay is **optional** — HSBG supports [Firestone](https://www.firestoneapp.com/) and the [HSReplay deck tracker](https://hsreplay.net/downloads/), uses one at a time, and works normally with neither.
 
 ### What's on out of the box
 
@@ -126,7 +127,9 @@ Pressing F2 while Hearthstone is already running restarts it cleanly, closing th
 
 A stalled launch is recovered rather than left hanging: the pipeline has a five-minute ceiling, time spent on the Battle.net login screen does not count against it, and a game that appears after the ceiling is still picked up.
 
-### `F3` — Show or hide Firestone
+### `F3` — Show or hide your overlay
+
+**What F3 toggles depends on which overlay this session is using.** Under Firestone it is the desktop windows; under HSReplay it is the tracker's on-screen overlay. Everything in the rest of this section describes the Firestone case; [the tracker case is below](#f3-under-the-hsreplay-tracker).
 
 Toggles the Firestone desktop windows (Main and Battlegrounds). They start hidden.
 
@@ -136,9 +139,21 @@ These windows are **deliberately exempt from the monitor lock.** They are what y
 
 **Two things F3 never touches.** The in-game overlay is always visible, whatever the lock state. And Firestone's notification popup — the "Your abilities are ready!" window — is not a toggle target at all; it is closed on sight and never painted.
 
+#### `F3` under the HSReplay tracker
+
+Hides and un-hides the tracker's on-screen overlay. It **starts shown** — the opposite default to Firestone, because an overlay you just launched and cannot see is not a useful thing to hand someone.
+
+Panels the tracker creates *while* F3 has it hidden — the Battlegrounds leaderboard at the start of a lobby, the combat simulator when a fight resolves — are caught and concealed too, so nothing leaks back onto the screen. So are windows the tracker shows again by itself: it re-displays its overlay on game-state changes, and those get put back under. That check runs four times a second rather than at event speed, so a disagreement between HSBG and the tracker reads as a slow blink instead of a strobe, and it gives up after 25 rounds on the same window and leaves it visible — a visible overlay is a cosmetic complaint, an overlay flickering for a whole session is not. The log says `HDT-HIDE ... standing down` if that ever happens.
+
+**It always comes back.** On the next press, on F4, on a tray exit, and on any crash on the way out — HSBG hides those windows, so it is responsible for giving them back, and a concealment outlives the script that applied it. If HSBG is ever killed outright (Task Manager, a power cut) while the tracker is hidden, double-clicking the tracker's own system-tray icon brings its main window back, and the overlay returns on the next game-state change.
+
+Nothing else about the tracker is touched: not moved, not resized, not monitor-locked, not restyled, not closed.
+
 ### `F4` — Shutdown
 
 Closes Overwolf, Battle.net and Hearthstone, restores everything the script changed, and exits.
+
+**The HSReplay tracker is left running.** It is also a collection browser, a deck editor and a stats window, and people keep it open between sessions — F4 means "end this Battlegrounds session", not "close everything I have open". A tracker that F3 had hidden is always handed back first. Set `HDTCloseOnF4=1` to close it too, and even then only if F2 was what started it.
 
 Also available as a held-key fallback, so it still works when a fullscreen game is swallowing window messages.
 
@@ -155,7 +170,19 @@ Four applications are involved in a Battlegrounds session. Left alone they produ
 | **Battle.net** | Opens on your chosen monitor, presses Play, and minimises *before* the game window arrives. Its service surfaces — boot splash, auto-login shell, maintenance alerts, Update Agent — never appear. If Play cannot start the game because an update or sign-in is pending, the launcher comes back and says so. |
 | **Hearthstone** | Launched, then left alone. Never hidden, muted or resized. The only thing the script decides is which monitor, and only if the game landed on the wrong one. |
 | **Overwolf** | Started immediately on F2, in parallel with Battle.net, so it is ready by the time the game is. |
-| **Firestone** | Optional. Its in-game overlay stays visible and untouched at all times; its desktop windows stay out of sight until you ask for them; its notification popup is closed on sight. If Firestone is not installed, every Firestone subsystem stays dormant and the rest works normally. |
+| **Firestone** | Optional. Its in-game overlay stays visible and untouched at all times; its desktop windows stay out of sight until you ask for them; its notification popup is closed on sight. If Firestone is not installed — or you picked the other overlay for this session — every Firestone subsystem stays dormant and the rest works normally. |
+| **HSReplay tracker** | Optional. Started on F2, at administrator level so it matches the game, and then left alone: never moved, resized, monitor-locked or restyled. F3 cloaks and un-cloaks it. F4 leaves it running unless you ask otherwise. |
+
+### Only one overlay at a time
+
+Firestone and the HSReplay tracker draw the same information in the same place. Two of them on one board is two sets of panels competing for the same pixels and two processes attached to the same game, so HSBG uses one per session.
+
+- **Only one installed** — it is used, silently. Nothing to ask.
+- **Both installed** — F2 asks, once, and remembers the answer **for that session only.** Restart HSBG and it asks again. Change your mind mid-session from the tray menu: *"Overlay for this session…"*.
+- **Neither** — F2 launches Battle.net and Hearthstone and nothing else, and F3 does nothing.
+- **Want to stop being asked** — set `Tracker=firestone` or `Tracker=hsreplay` in `HSBG Config.ini`.
+
+The overlay you don't pick is **left completely alone.** Not launched, not hidden, not moved, not closed — including a Firestone you happen to have open for something else entirely.
 
 ---
 
@@ -174,6 +201,10 @@ Four applications are involved in a Battlegrounds session. Left alone they produ
 | `HotkeyFreqMode` | `singular` | A word, not a number. `singular` — every key sounds the same note. `varied` — each key gets its own pitch. Any other value is read as `singular`. |
 | `HotkeyFreqSingular` | `110.0` | Pitch in Hz used by every key in `singular` mode, and the fallback for an unset key in `varied` mode. |
 | `HotkeyFreqF1`–`F4` | `82.41`, `110.00`, `73.42`, `55.00` | Per-key pitches used in `varied` mode; ignored in `singular`. Blank or `0` falls back to `HotkeyFreqSingular`. |
+| `Tracker` | `ask` | Which overlay to use. `ask` — if both are installed, F2 asks and remembers for that session only. `firestone` / `hsreplay` — always that one, never asks. `none` — neither; F2 launches only the game, F3 does nothing. `hdt`, `overwolf` and a few other spellings are understood and mapped to the right value. |
+| `HDTPath` | *(empty)* | Path to the HSReplay tracker, if the automatic lookup misses it. Point it at either `HearthstoneDeckTracker.exe` or the `Update.exe` beside it. |
+| `HDTGatePlay` | `1` | Wait for the tracker to be running before pressing Play. The tracker writes the log settings Hearthstone needs, and Hearthstone reads them **once, at start-up** — launch first and the tracker asks you to restart, which costs a whole relaunch. Capped at 25 seconds; past that Play fires anyway and the log says so. `0` disables the wait. |
+| `HDTCloseOnF4` | `0` | `0` — F4 leaves the tracker running. `1` — F4 closes it too, and only if F2 was what started it. A tracker already open before HSBG started is never closed by it. |
 
 Pitches must be between `20` and `2000` Hz. A value outside that range, or one that isn't a number, is discarded in favour of the default and logged as `CONFIG <key>=<value> is not a number` or `is out of range`.
 
@@ -201,7 +232,13 @@ Not `%TEMP%`, not `%APPDATA%` — beside the script, where you can find it. (If 
 A single launch is usually enough to explain any unexpected behaviour. The lines that matter most:
 
 ```
-STARTUP v9.0 settings in force: MonitorLock=1 HotkeyAudio=1 vol=25 freqMode=singular from C:\...\HSBG Config.ini
+STARTUP v9.1 settings in force: MonitorLock=1 HotkeyAudio=1 vol=25 freqMode=singular Tracker=ask from C:\...\HSBG Config.ini
+STARTUP overlays detected: Firestone=yes HSReplay=yes -- Tracker=ask
+TRACKER this session uses HSReplay tracker (chosen at the prompt)
+HDT-PATH found at the default location: C:\Users\...\AppData\Local\HearthstoneDeckTracker
+HDT-LAUNCH started, elevated (inherited from this script), so it matches the Hearthstone this script is about to launch
+HDT-GATE tracker up after 2100ms -- releasing the Play press
+SCOPE saw a window belonging to Discord.exe -- not a process this script manages, so it was ignored
 BNET-TIMING launcher ready 340ms after its window appeared -- the fixed sequence starts now
 BNET-TIMING Play fired 1200ms after ready; minimize scheduled in 1000ms (fixed)
 BNET-SEQ minimize confirmed
@@ -223,6 +260,15 @@ Check the `STARTUP` line in the log. It names the build, the settings in force, 
 
 **The hotkeys stopped responding.**
 Almost always a stuck modifier: if Windows believes Alt, Ctrl or a Windows key is still held, every F-key is treated as part of a system chord and passed through. The script detects and repairs this within a couple of seconds and logs `HOTKEY stuck modifier(s)`. If you see that line repeatedly, something else on the machine is disrupting the keyboard hook chain — Overwolf crashing is one cause. Tapping and releasing Alt and Ctrl clears it by hand.
+
+**The tracker says to restart Hearthstone, or to run it as administrator.**
+This is what the tracker support in HSBG exists to prevent, so seeing it means one of two things. Either the tracker was **already running before you pressed F2** — HSBG cannot fix that in place, because the tracker is single-instance and starting it again does nothing, so close it completely and press F2 again and HSBG will start it itself. The log says `HDT-ELEVATION the tracker was ALREADY RUNNING without administrator rights` when this is the cause. Or the game beat the tracker to start-up, in which case the log says `HDT-GATE ceiling reached` — the tracker took more than 25 seconds to come up and Play fired without it. Press F2 again; the tracker is up now.
+
+**F2 asks about overlays and I only want one of them.**
+Set `Tracker=firestone` or `Tracker=hsreplay` in `HSBG Config.ini`. It only asks when both are installed and nothing has been pinned.
+
+**Is HSBG interfering with my other overlay?**
+No — and the log proves it rather than asserting it. HSBG only ever moves, hides, cloaks or closes windows belonging to Hearthstone, Battle.net, the Blizzard Agent and Overwolf. Anything else is declined at the window hook and recorded once as `SCOPE saw a window belonging to <program> -- not a process this script manages, so it was ignored`. Search the log for `SCOPE` to see everything it looked at and left alone. The start-up line states the same list before anything has happened.
 
 **F1 does not skip.**
 Check the log line for the press: it records whether a game connection was identified at all. If none was found, set `f1Target := "all"` in the script's `CFG` block.
@@ -339,4 +385,6 @@ grep -v '^\s*;' "HSBG Script Final.ahk" | sed 's/\s\+;.*$//' | grep -v '^\s*$'
 - **The Windows Search indexer** is stopped while Hearthstone runs and restarted on exit.
 - **Two registry values are set and left**: Hearthstone's per-application GPU preference (high-performance), and Unity's saved display index when the monitor lock has to correct it — the latter only when the value actually differs from what is already stored. Both are settings for Hearthstone rather than for this script, so they persist deliberately; nothing else in the registry is touched.
 - **Window positions and visibility** for Battle.net, Overwolf and Firestone. Every concealment has a matching cleanup that works from an empty ledger, so a crash or a forced reload cannot leave a window unreachable.
+- **The HSReplay tracker**, if that is the overlay you chose: started on F2, and cloaked/un-cloaked by F3. Never moved, resized, monitor-locked, restyled, or closed unless `HDTCloseOnF4=1` *and* F2 was what started it. Its own settings files are never touched.
+- **Nothing else on the machine.** Every window the script acts on belongs to Hearthstone, Battle.net, the Blizzard Agent or Overwolf; any other program's windows are declined at the hook and logged once as `SCOPE`.
 - **Two files**, both beside the script: `HSBG Config.ini` and `HSBG.log`.

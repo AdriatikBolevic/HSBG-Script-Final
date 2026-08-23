@@ -2,7 +2,7 @@
 ;
 ;   HSBG  —  Hearthstone Battlegrounds Session Manager
 ;
-;   Version 8.0
+;   Version 9.1
 ;   Requires AutoHotkey v2.0 · Windows 10/11 · Administrator privileges
 ;
 ; ==============================================================================
@@ -20,6 +20,18 @@
 ;   Overwolf      The framework hosting the Firestone add-on.
 ;   Firestone     The Battlegrounds helper. Its in-game overlay stays visible at
 ;                 all times; its desktop windows stay out of sight until F3.
+;
+; ONE OVERLAY AT A TIME, AND YOU CHOOSE WHICH.
+;
+;   Firestone   As above -- an Overwolf add-on that reads the game's memory.
+;   HSReplay    Hearthstone Deck Tracker, from HearthSim. A standalone
+;               application that reads the game's logs. Launched by F2 and
+;               otherwise left entirely alone.
+;
+; If both are installed, F2 asks which one to use and remembers the answer for
+; that session only. If one is installed it is used without asking. The one not
+; chosen is never launched, hidden, moved or closed. See SECTION 7B, which also
+; explains why launching the tracker from here is what makes it work at all.
 ;
 ;
 ; HOTKEYS
@@ -47,20 +59,41 @@
 ;        Windows are placed on the monitor this script was started from. That
 ;        is a setting, and it lives in HSBG Config.ini, not in this file.
 ;
-;        Firestone is OPTIONAL. With no Overwolf/Firestone install, every
-;        Firestone subsystem stays dormant and the rest works normally.
+;        Firestone is OPTIONAL, and so is the tracker. With neither installed,
+;        every overlay subsystem stays dormant and the rest works normally.
 ;
-;   F3   Show or hide the Firestone desktop windows. Starts hidden. Firestone
-;        windows are deliberately exempt from the monitor lock: they return to
-;        wherever you last placed them, on whichever screen.
+;        WITH HSREPLAY, F2 ALSO STARTS THE TRACKER -- and that is what makes it
+;        work. This script is elevated, so the Hearthstone it launches is
+;        elevated too, and Windows will not let a normally-started tracker read
+;        an elevated game; that is the "run as administrator" message people
+;        get. A tracker started from here inherits this script's token, matches
+;        the game, and never shows it. The Play press waits for the tracker
+;        first, because Hearthstone reads the tracker's log settings once, at
+;        start-up. See SECTION 7B.
 ;
-;        Two things F3 never touches: the in-game overlay, which is always
-;        visible; and the notification popup, which is cloaked before it can
-;        paint and closed within milliseconds of being created, so it never
+;   F3   Show or hide the chosen overlay. WHAT IT TOGGLES DEPENDS ON WHICH
+;        OVERLAY THIS SESSION IS USING.
+;
+;        Under FIRESTONE -- Firestone's desktop windows. Starts hidden.
+;        Firestone windows are deliberately exempt from the monitor lock: they
+;        return to wherever you last placed them, on whichever screen.
+;
+;        Two things F3 never touches there: the in-game overlay, which is
+;        always visible; and the notification popup, which is cloaked before it
+;        can paint and closed within milliseconds of being created, so it never
 ;        becomes something F3 can summon back.
 ;
+;        Under HSREPLAY -- the tracker's on-screen overlay. Starts shown, since
+;        an overlay you launched and cannot see is not a useful default. It is
+;        DWM-cloaked rather than hidden, so the tracker never notices and never
+;        fights back, and everything is handed straight back on the next press,
+;        on F4, and on any exit.
+;
 ;   F4   Full shutdown. Closes Overwolf, Battle.net and Hearthstone, restores
-;        anything the script changed, and exits.
+;        anything the script changed, and exits. The HSReplay tracker is LEFT
+;        RUNNING by default -- it is also a collection browser and a stats
+;        window -- but a tracker F3 had hidden is always handed back first.
+;        HDTCloseOnF4=1 closes it too, and only if F2 was what started it.
 ;
 ;
 ; CONFIGURATION
@@ -186,6 +219,9 @@
 ;   S5   PROCESS MANAGER    Locate, launch and query the four applications.
 ;   S6   PATH RESOLUTION    Find Overwolf and Firestone on disk.
 ;   S7   SETTINGS PATCH     Pre-configure Firestone's own settings file.
+;   S7b  TRACKER LAYER      Which overlay this session uses; finding, launching
+;                           and hiding the HSReplay tracker; the one list of
+;                           processes this script is allowed to touch.
 ;   S8   FIREWALL MANAGER   The scoped connection block used by F1.
 ;   S9   PERFORMANCE        Timer resolution, process priority, GPU preference.
 ;   S10  WINDOW MANAGER     Concealment, paint detection and reveal.
@@ -215,7 +251,7 @@
 ; running script is the updated file" are separate claims -- and telling them
 ; apart by behaviour alone has cost real time on this script. This makes the
 ; running build identifiable at a glance, without opening anything.
-global HSBG_BUILD := "v9.0"
+global HSBG_BUILD := "v9.1"
 #SingleInstance Force
 
 ; ── THREAD SETTINGS: the single largest source of sluggishness in this script ─
@@ -283,6 +319,33 @@ global CFG := {
     ; fsFollowMonitorLock, further down -- because they are what you read while
     ; playing and usually belong on a different screen from the game.
     lockWindowsToChosenMonitor: true,
+
+    ; WHICH OVERLAY THIS SESSION USES.
+    ;
+    ; Two Battlegrounds overlays are supported, and they are mutually
+    ; exclusive by design -- running both at once means two sets of panels
+    ; competing for the same screen and two processes reading the same game.
+    ;
+    ;   "ask"        (default) If BOTH are installed, F2 asks which one to use
+    ;                and remembers the answer FOR THAT SESSION ONLY. Restart the
+    ;                script and it asks again. If only one is installed there is
+    ;                nothing to ask and it is chosen silently.
+    ;   "firestone"  Always Firestone. Never asks.
+    ;   "hsreplay"   Always the HSReplay / Hearthstone Deck Tracker. Never asks.
+    ;   "none"       Neither. F2 launches Battle.net and Hearthstone and nothing
+    ;                else; F3 does nothing.
+    ;
+    ; Overridden by Tracker= in HSBG Config.ini. The session choice made at the
+    ; prompt overrides both, and is never written to disk.
+    ;
+    ; WHAT THE CHOICE CHANGES:
+    ;   * F2 launches the chosen overlay, and only that one.
+    ;   * F3 belongs to the chosen overlay. Under Firestone it is the desktop-
+    ;     window show/hide it has always been. Under HSReplay it hides and
+    ;     un-hides the tracker's on-screen overlay.
+    ;   * The overlay that was NOT chosen is left completely alone -- not
+    ;     launched, not suppressed, not closed, not moved.
+    tracker:                "ask",
 
     ; ── THESE TWO ARE DRIVEN BY HSBG Config.ini ────────────────────────────────────
     ; The values here are the FALLBACKS used when no settings file is present.
@@ -742,6 +805,71 @@ global CFG := {
     fsLaunchArmSettleMs:     50,       ; reduced from 250ms to arm suppressors faster
                                        ; the suppressors now have a very short
                                        ; settle before Firestone starts.
+    ; ── HSReplay / Hearthstone Deck Tracker ─────────────────────────────────
+    ; Only consulted when the session's tracker is "hsreplay". Every one of
+    ; these is dormant under Firestone.
+    hdtPath:                 "",       ; explicit path to HearthstoneDeckTracker.exe
+                                       ; (or to the Update.exe stub beside it).
+                                       ; Empty = find it automatically. Set this
+                                       ; from HDTPath= in HSBG Config.ini only if
+                                       ; the automatic lookup misses a portable
+                                       ; or relocated install.
+
+    ; HOLD THE PLAY PRESS UNTIL THE TRACKER IS UP.
+    ;
+    ; The tracker writes log.config into %LocalAppData%\Blizzard\Hearthstone,
+    ; and that file is read by Hearthstone ONCE, at start-up. A game that
+    ; launches before the file is written runs the whole session with the logs
+    ; the tracker needs switched off -- which is the "please restart
+    ; Hearthstone" message, and it costs a full relaunch to clear.
+    ;
+    ; So the Play press waits for the tracker process to exist. This is the same
+    ; ordering rule Firestone already has for a different reason (it reads the
+    ; game's memory and must be attached first); the two overlays disagree about
+    ; why the tracker goes first, and agree completely that it does.
+    hdtGatePlay:             true,
+    hdtReadyCeilingMs:       25000,    ; BOUNDED, for the same reason every other
+                                       ; gate in this script is bounded: a tracker
+                                       ; that never starts must cost a late
+                                       ; log.config, not a session that never
+                                       ; launches. Past this the Play press fires
+                                       ; regardless and the reason is logged.
+
+    hdtCloseOnF4:            false,    ; false = F4 shuts down Hearthstone,
+                                       ; Battle.net and Overwolf and LEAVES THE
+                                       ; TRACKER RUNNING. That is deliberate: the
+                                       ; tracker is also a collection browser and
+                                       ; a stats window, and people keep it open
+                                       ; between sessions. true = close it too,
+                                       ; but only if F2 was what started it --
+                                       ; a tracker that was already running when
+                                       ; the script started is never closed by it.
+    hdtHideWatchMs:          400,      ; while F3 has the overlay hidden, how often
+                                       ; to catch a tracker window BORN hidden-side
+                                       ; (a new panel, a re-created overlay) and
+                                       ; conceal it too. Off entirely when the
+                                       ; overlay is showing.
+                                       ;
+                                       ; DELIBERATELY SLOW. This runs against a
+                                       ; process that legitimately shows its own
+                                       ; windows, so the two can disagree. At
+                                       ; 400ms a disagreement is a slow blink
+                                       ; that resolves; at event speed it would
+                                       ; be a strobe.
+    hdtReHideMax:            25,       ; how many times one window may be re-shown
+                                       ; by the tracker, and put back, before this
+                                       ; gives up on it and leaves it visible.
+                                       ; Reached only in a genuine fight -- normal
+                                       ; re-shows are a handful per match. A
+                                       ; visible overlay is a cosmetic complaint;
+                                       ; an overlay this script strobes for the
+                                       ; rest of the session is not. Logged loudly
+                                       ; when it happens.
+    trackerPickTimeoutMs:    30000,    ; how long the "which overlay?" prompt waits
+                                       ; before choosing Firestone and getting on
+                                       ; with the launch. A prompt that can block
+                                       ; F2 forever is a hang.
+
     ; ── Firestone suppression cadence (burst vs coast) ──────────────────────
     ; The suppression sweep enumerates every Overwolf / OverwolfBrowser window
     ; and reads each title. At 1 ms that is ~1000 full enumerations per second
@@ -1227,6 +1355,56 @@ _WriteDefaultConfig(path) {
     txt .= "HotkeyFreqF2=110.00`r`n"
     txt .= "HotkeyFreqF3=73.42`r`n"
     txt .= "HotkeyFreqF4=55.00`r`n"
+    txt .= "`r`n"
+    txt .= "; ----------------------------------------------------------------------------`r`n"
+    txt .= ";  YOUR OVERLAY`r`n"
+    txt .= "; ----------------------------------------------------------------------------`r`n"
+    txt .= "`r`n"
+    txt .= "; Tracker -- which overlay HSBG uses. Default: ask`r`n"
+    txt .= ";`r`n"
+    txt .= ";   ask        If BOTH Firestone and the HSReplay tracker (Hearthstone Deck`r`n"
+    txt .= ";              Tracker) are installed, F2 asks which one to use and remembers`r`n"
+    txt .= ";              the answer FOR THAT SESSION ONLY. If only one is installed`r`n"
+    txt .= ";              there is nothing to ask and it is used silently.`r`n"
+    txt .= ";   firestone  Always Firestone. Never asks.`r`n"
+    txt .= ";   hsreplay   Always the HSReplay tracker. Never asks.`r`n"
+    txt .= ";   none       Neither. F2 launches Battle.net and Hearthstone and nothing`r`n"
+    txt .= ";              else, and F3 does nothing.`r`n"
+    txt .= ";`r`n"
+    txt .= ";   Only one runs at a time, on purpose: two overlays means two sets of`r`n"
+    txt .= ";   panels over the same board. The one you do not pick is left completely`r`n"
+    txt .= ";   alone -- not launched, not hidden, not moved, not closed.`r`n"
+    txt .= ";`r`n"
+    txt .= ";   F3 belongs to whichever is in use. Under Firestone it shows and hides`r`n"
+    txt .= ";   Firestone's desktop windows, as it always has. Under HSReplay it hides`r`n"
+    txt .= ";   and un-hides the tracker's on-screen overlay.`r`n"
+    txt .= "Tracker=ask`r`n"
+    txt .= "`r`n"
+    txt .= "; HDTPath -- optional path to the HSReplay tracker.`r`n"
+    txt .= ";   Leave empty and HSBG finds it on its own. Point it at either`r`n"
+    txt .= ";   HearthstoneDeckTracker.exe or the Update.exe beside it if you have a`r`n"
+    txt .= ";   portable or relocated install that is not being found.`r`n"
+    txt .= "HDTPath=`r`n"
+    txt .= "`r`n"
+    txt .= "; HDTGatePlay -- default 1 (on). Ignored unless the HSReplay tracker is in use.`r`n"
+    txt .= ";`r`n"
+    txt .= ";   1 = wait for the tracker to be running before pressing Play.`r`n"
+    txt .= ";   0 = press Play as soon as the launcher is ready.`r`n"
+    txt .= ";`r`n"
+    txt .= ";   The tracker writes the log settings Hearthstone needs, and Hearthstone`r`n"
+    txt .= ";   reads them once, when it starts. Launch the game first and the tracker`r`n"
+    txt .= ";   asks you to restart it -- which costs a whole relaunch. The wait is`r`n"
+    txt .= ";   capped at 25 seconds; past that Play fires anyway and the log says so.`r`n"
+    txt .= "HDTGatePlay=1`r`n"
+    txt .= "`r`n"
+    txt .= "; HDTCloseOnF4 -- default 0 (off).`r`n"
+    txt .= ";`r`n"
+    txt .= ";   0 = F4 closes Hearthstone, Battle.net and Overwolf and LEAVES the`r`n"
+    txt .= ";       tracker running. It is also a collection browser and a stats`r`n"
+    txt .= ";       window, and most people keep it open between sessions.`r`n"
+    txt .= ";   1 = F4 closes it too -- but only if F2 was what started it. A tracker`r`n"
+    txt .= ";       that was already open before HSBG started is never closed by it.`r`n"
+    txt .= "HDTCloseOnF4=0`r`n"
     try FileAppend(txt, path, "UTF-8-RAW")
     _MakeConfigEditable(path)
 }
@@ -1325,12 +1503,53 @@ LoadUserConfig() {
             CFG.hotkeyFreqF4 := 55.0
         }
 
+        ; ── Overlay selection ───────────────────────────────────────────────
+        ; A word, not a number, and an unrecognised one is worth a log line
+        ; rather than a silent fallback: "Tracker=hsrelay" should be findable.
+        try {
+            trk := StrLower(Trim(IniRead(path, "Settings", "Tracker", "ask")))
+        } catch {
+            trk := "ask"
+        }
+        ; Spellings people actually reach for, mapped to the real values. The
+        ; tracker goes by three names in the wild -- HSReplay, HDT, and
+        ; Hearthstone Deck Tracker -- and refusing two of them would be a
+        ; settings file that argues with its user about vocabulary.
+        switch trk {
+            case "hdt", "decktracker", "deck tracker", "hearthstonedecktracker":
+                trk := "hsreplay"
+            case "hs replay", "hsreplay.net", "replay":
+                trk := "hsreplay"
+            case "fs", "overwolf":
+                trk := "firestone"
+            case "off", "neither", "":
+                trk := "none"
+        }
+        if (trk != "ask" && trk != "firestone" && trk != "hsreplay" && trk != "none") {
+            _FSLog("CONFIG Tracker=" . trk . " is not one of ask / firestone /"
+                 . " hsreplay / none -- using ask")
+            trk := "ask"
+        }
+        CFG.tracker := trk
+
+        try {
+            CFG.hdtPath := Trim(IniRead(path, "Settings", "HDTPath", ""), ' "')
+        } catch {
+            CFG.hdtPath := ""
+        }
+        CFG.hdtGatePlay   := (_CfgInt(path, "HDTGatePlay",   1, 0, 1) = 1)
+        CFG.hdtCloseOnF4  := (_CfgInt(path, "HDTCloseOnF4",  0, 0, 1) = 1)
+
         _FSLog("CONFIG read " . path
              . " -- MonitorLock=" . (CFG.lockWindowsToChosenMonitor ? 1 : 0)
              . " HotkeyAudio="    . (CFG.hotkeyAudio ? 1 : 0)
              . " Volume="         .  CFG.hotkeyAudioVolume
              . " SoundFile="      .  CFG.hotkeySoundFile
-             . " FreqMode="       .  CFG.hotkeyFreqMode)
+             . " FreqMode="       .  CFG.hotkeyFreqMode
+             . " Tracker="        .  CFG.tracker
+             . " HDTGatePlay="    . (CFG.hdtGatePlay  ? 1 : 0)
+             . " HDTCloseOnF4="   . (CFG.hdtCloseOnF4 ? 1 : 0)
+             . " HDTPath="        .  CFG.hdtPath)
     } catch as e {
         try _FSLog("CONFIG FAILED to load: " . e.Message
                  . " -- the settings file was NOT applied and the built-in"
@@ -1360,6 +1579,23 @@ global State := {
     hsHiddenLaunchUntil:     0,       ; TickCount ceiling for that watch
     fsLoadingSeen:           false,
     wsearchPaused:           false,   ; true = we stopped WSearch and owe it a restart
+
+    ; ── Tracker selection (session-scoped, never written to disk) ───────────
+    ; "" = not decided yet. "firestone" | "hsreplay" | "none" once it is.
+    ;
+    ; THIS IS DELIBERATELY NOT PERSISTED. The user asked to be asked per
+    ; session, and a remembered answer is exactly the thing that makes "I
+    ; switched trackers and it kept opening the old one" possible. The .ini
+    ; setting (CFG.tracker) is how someone makes a choice permanent; this is
+    ; how they make one for tonight.
+    trackerMode:             "",
+    trackerAsked:            false,   ; true = the picker has run this session,
+                                      ; so a second F2 does not re-prompt.
+    hdtLaunchedByUs:         false,   ; true = F2 started the tracker, so F4 may
+                                      ; close it (only when CFG.hdtCloseOnF4).
+    hdtHidden:               false,   ; true = F3 currently has the tracker's
+                                      ; windows cloaked.
+    hdtElevationWarned:      false,   ; one warning per session, not one per F2.
 }
 
 ; State for the F1 cursor shield. While active (mode "F1") the #HotIf
@@ -1381,6 +1617,8 @@ global Cache := {
     fsCmd:                "",
     fsAppId:              "",
     firestoneLookupDone:  false,
+    hdtCmd:               "",         ; resolved HSReplay/HDT launch command
+    hdtLookupDone:        false,      ; true = the lookup ran (hit or miss)
 }
 
 ; Launch pipeline state machine.
@@ -2539,6 +2777,19 @@ TryLaunchWTCG() {
         if (A_TickCount - _bnetReadyAt < CFG.bnetRevealDwellMs)
             return false
 
+        ; ── THE TRACKER GOES UP BEFORE THE GAME DOES ───────────────────────
+        ; Under HSReplay only, and only when this launch is what started it.
+        ; Hearthstone reads log.config exactly once, at start-up, and it is the
+        ; tracker that writes the file -- so a game that beats the tracker to
+        ; the punch spends the whole session with the logs the tracker needs
+        ; switched off, and clearing that costs a full relaunch.
+        ;
+        ; Bounded inside _TrackerPlayGateClear, on the same principle as the
+        ; readiness gate above: a tracker that never starts must cost a late
+        ; log.config, never a launch that does not happen.
+        if !_TrackerPlayGateClear()
+            return false
+
         ; Hand the foreground away first. Battle.net takes the foreground when
         ; it boots, so if the launch command lands while it still holds it, the
         ; Play button is the focused control of the focused window and Windows
@@ -2786,6 +3037,1011 @@ EnsureFirestoneSettings() {
             }
         }
     }
+}
+
+; ==============================================================================
+; SECTION 7B: TRACKER LAYER — which overlay this session belongs to
+; ==============================================================================
+;
+; This script supports two Battlegrounds overlays, and exactly one of them is
+; live at a time.
+;
+;   Firestone   An Overwolf add-on. Reads the game's MEMORY. Everything in
+;               sections 6, 7 and 10 exists to launch it and to keep its desktop
+;               windows off the screen until F3 asks for them.
+;
+;   HSReplay    Hearthstone Deck Tracker, from HearthSim. A standalone WPF
+;               application. Reads the game's LOG FILES, and reads its memory for
+;               the Battlegrounds pieces. Nothing in this script suppresses any
+;               part of it: it is launched, and otherwise left alone.
+;
+; ── WHY ONE AND NOT BOTH ──────────────────────────────────────────────────────
+; They draw the same information in the same place. Two overlays on one board is
+; two sets of panels fighting for the same pixels, two processes attached to the
+; same game, and two answers to "why is my screen covered". Choosing is not a
+; limitation being worked around; it is the correct behaviour.
+;
+; ── THE ELEVATION PROBLEM, AND WHY LAUNCHING THE TRACKER SOLVES IT ────────────
+; THIS IS THE WHOLE REASON THIS SECTION EXISTS. Read it before changing how the
+; tracker is started.
+;
+; This script runs elevated -- it has to, for F1's firewall rules and for the
+; Windows Search pause. A child process inherits its parent's token, so when F2
+; starts Battle.net, Battle.net is elevated, and the Hearthstone it launches is
+; elevated too. That is a side effect of who pressed Play, not a requirement:
+; nothing in this script needs the game elevated, and Blizzard would rather it
+; were not.
+;
+; It matters anyway, because Windows will not let a process read a process of
+; higher integrity than itself. A tracker started normally -- from the Start
+; menu, from a shortcut, by Windows at sign-in -- is medium integrity, the game
+; is high, and the tracker cannot see it. What the user gets is:
+;
+;     "Hearthstone is running with elevated permissions.
+;      Restart Hearthstone, or run the tracker as administrator."
+;
+; Nothing is broken. The two halves simply do not match.
+;
+; Launching the tracker FROM HERE makes them match. It becomes a child of this
+; elevated script, inherits the same high-integrity token, and is then reading a
+; game at its own level. No UAC prompt (this process is already elevated, so
+; there is nothing to consent to), no change to how Hearthstone starts, and no
+; change whatsoever to the Firestone path.
+;
+; The one case this cannot fix is a tracker that was ALREADY running, at medium
+; integrity, before F2. A second copy will not start -- it is single-instance --
+; so the mismatch survives. That case is detected and reported rather than
+; silently tolerated; see _TrackerCheckElevation.
+;
+; ── WHAT IS DELIBERATELY NOT DONE HERE ────────────────────────────────────────
+; The tracker's windows are never moved, resized, minimised, closed, restyled or
+; monitor-locked. F3 cloaks and un-cloaks them and that is the entire extent of
+; it. A tracker's layout is something its user arranged on purpose, and the
+; fastest way to make this script unwelcome would be to rearrange it.
+;
+
+; Which overlay is live. Both return false before the choice is made.
+;
+; Written out rather than as expression functions because they read a global,
+; and every other function in this script declares the globals it reads. A
+; fat-arrow body has nowhere to put the declaration.
+TrackerIsFirestone() {
+    global State
+    return (State.trackerMode = "firestone")
+}
+
+TrackerIsHDT() {
+    global State
+    return (State.trackerMode = "hsreplay")
+}
+
+; Human-readable, for the HUD and the log.
+TrackerModeLabel(mode := "") {
+    global State
+    if (mode = "")
+        mode := State.trackerMode
+    switch mode {
+        case "firestone": return "Firestone"
+        case "hsreplay":  return "HSReplay tracker"
+        case "none":      return "no overlay"
+    }
+    return "undecided"
+}
+
+; ------------------------------------------------------------------------------
+; HSReplay / HDT — finding it on disk
+; ------------------------------------------------------------------------------
+;
+; The tracker ships as a Squirrel application, which means the executable does
+; NOT sit at a stable path: it lives in a versioned folder (app-1.2.3) that
+; changes name on every update, beside an Update.exe stub that knows which
+; version is current. Pointing at today's app folder would work until the next
+; auto-update and then break silently.
+;
+; So the stub is preferred over the executable wherever both exist. It is what
+; the Start-menu shortcut runs, it survives updates, and the process it starts
+; is still our child -- which is the property the whole elevation fix depends
+; on.
+;
+; Five mechanisms, most specific first. Cached after the first answer, hit or
+; miss, so a machine without the tracker does not re-scan the disk on every F2.
+
+GetHDTCmd() {
+    global Cache, CFG
+    if Cache.hdtLookupDone
+        return Cache.hdtCmd
+
+    Cache.hdtLookupDone := true
+    Cache.hdtCmd        := ""
+
+    ; (1) An explicit path from the settings file always wins.
+    if (CFG.hdtPath != "") {
+        cmd := _HDTCmdForPath(CFG.hdtPath)
+        if (cmd != "") {
+            Cache.hdtCmd := cmd
+            _FSLog("HDT-PATH using HDTPath from the settings file: " . CFG.hdtPath)
+            return Cache.hdtCmd
+        }
+        _FSLog("HDT-PATH HDTPath=" . CFG.hdtPath . " does not exist -- ignoring it"
+             . " and looking for the tracker in the usual places")
+    }
+
+    ; (2) A running tracker tells us exactly where it lives. Nothing beats this.
+    pid := ProcessExist("HearthstoneDeckTracker.exe")
+    if pid {
+        try {
+            running := ProcessGetPath(pid)
+            if (running != "") {
+                ; Prefer the Update.exe stub two folders up, if it is there:
+                ; ...\HearthstoneDeckTracker\app-1.2.3\HearthstoneDeckTracker.exe
+                ;                            ^ stub lives here
+                SplitPath(running, , &appDir)
+                SplitPath(appDir,  , &rootDir)
+                stub := rootDir . "\Update.exe"
+                if FileExist(stub) {
+                    Cache.hdtCmd := _HDTStubCmd(stub)
+                    _FSLog("HDT-PATH resolved from the running tracker (via its"
+                         . " update stub): " . stub)
+                    return Cache.hdtCmd
+                }
+                Cache.hdtCmd := '"' . running . '"'
+                _FSLog("HDT-PATH resolved from the running tracker: " . running)
+                return Cache.hdtCmd
+            }
+        }
+    }
+
+    ; (3) The default install root, which is per-user and needs no admin.
+    root := EnvGet("LOCALAPPDATA") . "\HearthstoneDeckTracker"
+    cmd  := _HDTCmdForRoot(root)
+    if (cmd != "") {
+        Cache.hdtCmd := cmd
+        _FSLog("HDT-PATH found at the default location: " . root)
+        return Cache.hdtCmd
+    }
+
+    ; (4) The uninstall registry entry, for an install that was relocated.
+    for key in [
+        "HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\HearthstoneDeckTracker",
+        "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\HearthstoneDeckTracker",
+        "HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\HearthstoneDeckTracker"
+    ] {
+        loc := ""
+        try loc := RegRead(key, "InstallLocation")
+        if (loc != "") {
+            cmd := _HDTCmdForRoot(loc)
+            if (cmd != "") {
+                Cache.hdtCmd := cmd
+                _FSLog("HDT-PATH found via the registry: " . loc)
+                return Cache.hdtCmd
+            }
+        }
+        ; DisplayIcon usually points straight at the executable.
+        icon := ""
+        try icon := RegRead(key, "DisplayIcon")
+        icon := Trim(StrSplit(icon, ",")[1], ' "')
+        if (icon != "") {
+            cmd := _HDTCmdForPath(icon)
+            if (cmd != "") {
+                Cache.hdtCmd := cmd
+                _FSLog("HDT-PATH found via the registry icon path: " . icon)
+                return Cache.hdtCmd
+            }
+        }
+    }
+
+    _FSLog("HDT-PATH no HSReplay / Hearthstone Deck Tracker install found."
+         . " This is not an error -- it just means the tracker is not one of"
+         . " this session's options. Set HDTPath= in the settings file if it"
+         . " is installed somewhere unusual.")
+    return ""
+}
+
+; Build a launch command from an install ROOT folder.
+_HDTCmdForRoot(root) {
+    root := RTrim(root, "\")
+    if (root = "" || !DirExist(root))
+        return ""
+    stub := root . "\Update.exe"
+    if FileExist(stub)
+        return _HDTStubCmd(stub)
+    direct := root . "\HearthstoneDeckTracker.exe"
+    if FileExist(direct)
+        return '"' . direct . '"'
+    ; Versioned folders, newest first.
+    newest := _HDTNewestAppExe(root)
+    return (newest != "") ? ('"' . newest . '"') : ""
+}
+
+; Build a launch command from a FILE path, which may be either the stub or the
+; executable itself.
+_HDTCmdForPath(path) {
+    path := Trim(path, ' "')
+    if (path = "" || !FileExist(path))
+        return ""
+    SplitPath(path, &name)
+    if (name = "Update.exe")
+        return _HDTStubCmd(path)
+    return '"' . path . '"'
+}
+
+; The Squirrel stub invocation. --processStart names the executable to run out
+; of whichever app-* folder is current, so this keeps working across updates.
+_HDTStubCmd(stub) => '"' . stub . '" --processStart HearthstoneDeckTracker.exe'
+
+; Highest-versioned app-*\HearthstoneDeckTracker.exe under an install root.
+;
+; Sorted by version NUMBER, not by name and not by timestamp. "app-1.10.0" sorts
+; before "app-1.9.0" alphabetically and is the newer of the two; a file date is
+; whatever the installer happened to stamp. Neither is the question being asked.
+_HDTNewestAppExe(root) {
+    best := "", bestVer := ""
+    loop files, root . "\app-*", "D" {
+        exe := A_LoopFileFullPath . "\HearthstoneDeckTracker.exe"
+        if !FileExist(exe)
+            continue
+        ver := SubStr(A_LoopFileName, 5)      ; strip "app-"
+        if (best = "" || _VerCompare(ver, bestVer) > 0) {
+            best    := exe
+            bestVer := ver
+        }
+    }
+    return best
+}
+
+; Compare two dotted version strings. 1 = a is newer, -1 = b is newer, 0 = same.
+; Missing components count as zero, so "1.2" and "1.2.0" are equal.
+_VerCompare(a, b) {
+    pa := StrSplit(a, "."), pb := StrSplit(b, ".")
+    n  := Max(pa.Length, pb.Length)
+    loop n {
+        va := (A_Index <= pa.Length && IsInteger(pa[A_Index])) ? Integer(pa[A_Index]) : 0
+        vb := (A_Index <= pb.Length && IsInteger(pb[A_Index])) ? Integer(pb[A_Index]) : 0
+        if (va > vb)
+            return 1
+        if (va < vb)
+            return -1
+    }
+    return 0
+}
+
+; Is the tracker installed at all? Cheap after the first call, never throws.
+HDTInstalled() {
+    try return (GetHDTCmd() != "")
+    return false
+}
+
+; Is it running right now? Cached the same way every other process query here
+; is: positives for half a second, negatives never.
+HDTRunning()  => _ProcExistCached("HearthstoneDeckTracker.exe") != 0
+GetHDTPID()   => _ProcExistCached("HearthstoneDeckTracker.exe")
+
+; ------------------------------------------------------------------------------
+; Elevation
+; ------------------------------------------------------------------------------
+
+; Is this process elevated?  1 = yes, 0 = no, -1 = could not tell.
+;
+; -1 is a real answer and callers must treat it as one. Querying a process token
+; can fail for reasons that have nothing to do with the answer -- a protected
+; process, a process that exited between the two calls -- and reporting "not
+; elevated" for "do not know" would produce a warning about a problem that may
+; not exist.
+_ProcessIsElevated(pid) {
+    static PROCESS_QUERY_LIMITED_INFORMATION := 0x1000
+    static TOKEN_QUERY                       := 0x0008
+    static TokenElevation                    := 20      ; TOKEN_INFORMATION_CLASS
+    if !pid
+        return -1
+    hProc := 0
+    hTok  := 0
+    try {
+        hProc := DllCall("kernel32\OpenProcess"
+                        , "UInt", PROCESS_QUERY_LIMITED_INFORMATION
+                        , "Int",  0
+                        , "UInt", pid
+                        , "Ptr")
+        if !hProc
+            return -1
+        if !DllCall("advapi32\OpenProcessToken", "Ptr", hProc
+                   , "UInt", TOKEN_QUERY, "Ptr*", &hTok)
+            return -1
+        buf := Buffer(4, 0)
+        len := 0
+        if !DllCall("advapi32\GetTokenInformation", "Ptr", hTok
+                   , "Int", TokenElevation, "Ptr", buf, "UInt", 4, "UInt*", &len)
+            return -1
+        return NumGet(buf, 0, "UInt") ? 1 : 0
+    } catch {
+        return -1
+    } finally {
+        if hTok
+            try DllCall("kernel32\CloseHandle", "Ptr", hTok)
+        if hProc
+            try DllCall("kernel32\CloseHandle", "Ptr", hProc)
+    }
+}
+
+; A tracker that was already running before F2, without administrator rights,
+; cannot be fixed by launching it -- it is single-instance, so the second start
+; is a no-op and the mismatch stays.
+;
+; SAY SO, ONCE. The alternative is a user who watches this script start their
+; tracker and then sees the tracker complain anyway, with nothing anywhere
+; explaining why. Killing it and restarting it would fix the mismatch and is
+; deliberately not done: closing somebody's tracker out from under them, with
+; whatever they had open in it, is not a decision this script gets to make.
+_TrackerCheckElevation() {
+    global State
+    if State.hdtElevationWarned
+        return false
+    pid := GetHDTPID()
+    if !pid
+        return false
+    if (_ProcessIsElevated(pid) != 0)
+        return false        ; elevated, or unknowable: nothing to report
+
+    State.hdtElevationWarned := true
+    _FSLog("HDT-ELEVATION the tracker was ALREADY RUNNING without administrator"
+         . " rights when F2 fired. This script is elevated, so the Hearthstone"
+         . " it launches is elevated too, and Windows does not let a"
+         . " medium-integrity process read a high-integrity one -- which is"
+         . " what produces the tracker's `"run as administrator`" message."
+         . " Nothing here can repair it in place: the tracker is"
+         . " single-instance, so starting it again does nothing. Close the"
+         . " tracker completely and press F2 again; this script will start it"
+         . " itself, at a matching level, and the message will not appear.")
+    try BgHUD.Show("Tracker already open without admin — close it, press F2", 6000)
+    return true
+}
+
+; ------------------------------------------------------------------------------
+; Launching
+; ------------------------------------------------------------------------------
+
+; Start the tracker, elevated, as a child of this script. Returns true only if a
+; start was actually issued.
+LaunchHDTNow() {
+    global State
+
+    if HDTRunning() {
+        ; Already up. The only thing worth doing is checking whether it is up at
+        ; a level that can actually see the game.
+        _TrackerCheckElevation()
+        return false
+    }
+
+    cmd := GetHDTCmd()
+    if (cmd = "") {
+        _FSLog("HDT-LAUNCH nothing to launch -- no tracker install found")
+        return false
+    }
+
+    try {
+        Run(cmd)
+    } catch as e {
+        _FSLog("HDT-LAUNCH failed to start the tracker: " . e.Message
+             . " -- command was: " . cmd)
+        try BgHUD.Show("Could not start the tracker", 2500)
+        return false
+    }
+
+    State.hdtLaunchedByUs := true
+    _FSLog("HDT-LAUNCH started, elevated (inherited from this script), so it"
+         . " matches the Hearthstone this script is about to launch. cmd="
+         . cmd)
+    return true
+}
+
+; ------------------------------------------------------------------------------
+; The Play gate — the tracker goes up before the game
+; ------------------------------------------------------------------------------
+;
+; log.config is read by Hearthstone ONCE, at start-up, and it is the tracker that
+; writes it. Press Play before the tracker exists and the game spends the entire
+; session with the logs the tracker needs switched off. The tracker notices and
+; asks for a restart, which costs a full relaunch.
+;
+; Called from TryLaunchWTCG, immediately before the launch command fires.
+; Returns true when the Play press may proceed.
+; The stamp is a GLOBAL rather than a static inside the gate, so that F2 can
+; clear it. A launch abandoned mid-wait -- F4, a stall, an abort -- would
+; otherwise leave the clock running, and the NEXT launch would inherit an
+; already-expired ceiling and skip the wait entirely at the one moment it was
+; most needed. Reset at the top of every F2.
+global _hdtGateSince := 0
+
+_TrackerPlayGateClear() {
+    global CFG, State, _hdtGateSince
+
+    ; Nothing to wait for unless THIS launch is the one that started the tracker.
+    ; A tracker that was already running has already written log.config.
+    if !(CFG.hdtGatePlay && TrackerIsHDT() && State.hdtLaunchedByUs) {
+        _hdtGateSince := 0
+        return true
+    }
+
+    if HDTRunning() {
+        if _hdtGateSince {
+            _FSLog("HDT-GATE tracker up after " . (A_TickCount - _hdtGateSince)
+                 . "ms -- releasing the Play press")
+            _hdtGateSince := 0
+        }
+        return true
+    }
+
+    if !_hdtGateSince {
+        _hdtGateSince := A_TickCount
+        _FSLog("HDT-GATE holding the Play press until the tracker is running"
+             . " (Hearthstone reads log.config once, at start-up)")
+        try BgHUD.Show("Waiting for the tracker…", 0)
+    }
+
+    ; BOUNDED, like every other gate in this pipeline. A tracker that never
+    ; starts must cost a late log.config, not a session that never launches.
+    if (A_TickCount - _hdtGateSince >= CFG.hdtReadyCeilingMs) {
+        _FSLog("HDT-GATE ceiling reached after " . (A_TickCount - _hdtGateSince)
+             . "ms without the tracker appearing -- pressing Play anyway. If"
+             . " the tracker asks you to restart Hearthstone this session,"
+             . " this is why.")
+        _hdtGateSince := 0
+        return true
+    }
+    return false
+}
+
+; ------------------------------------------------------------------------------
+; F3 under HSReplay — hide and un-hide the tracker
+; ------------------------------------------------------------------------------
+;
+; ── CLOAK PLUS HIDE, AND THE HIDE IS THE PART THAT WORKS ─────────────────────
+;
+; THIS WAS A CLOAK ON ITS OWN AND IT DID NOTHING. Recording why, because the
+; reasoning that produced it is genuinely appealing and somebody will have it
+; again.
+;
+; The appealing version: a DWM cloak is invisible to the application, so the
+; tracker never notices its window has gone and never fights to bring it back.
+; The window stays shown as far as it is concerned, keeps updating, and simply
+; is not composited. No duel, nothing to restore but the cloak.
+;
+; What actually happens: DwmSetWindowAttribute(DWMWA_CLOAK) does not reliably
+; take on a window owned by ANOTHER PROCESS. The call succeeds, the log says
+; "concealed 1 tracker window(s)", and the window is still sitting on the
+; screen. The HRESULT is not checked -- and checking it would not have helped,
+; because it is the compositor that quietly declines, not the call.
+;
+; The evidence was already in this file. Look at _FSWarmSuppress: it cloaks
+; and THEN parks the window off the virtual desktop, or cloaks and then
+; SW_HIDEs it. Every Firestone surface this script hides is hidden by the park
+; or the SW_HIDE. The cloak is there to stop a frame appearing in the gap
+; before the real hide lands. It is an anti-flash measure, not a hiding
+; mechanism, and reading it as one cost a release.
+;
+; So: cloak first (free, and it does take on some systems, where it saves the
+; intermediate frame), then SW_HIDE, which is what removes the window.
+;
+; ── THE DUEL THE CLOAK WAS SUPPOSED TO AVOID IS REAL, AND IS HANDLED ─────────
+; The tracker does re-show its overlay -- on game-state changes, when a lobby
+; starts, when a combat resolves. HDTHideWatch puts those back under, at 400ms
+; rather than at event speed so the two can never thrash, and with a re-hide
+; cap per window so a determined tracker ends up visible rather than flickering
+; forever. Firestone's birth-reassert cap exists for the same reason.
+;
+; ── CLICKS ───────────────────────────────────────────────────────────────────
+; A hidden window does not hit-test at all, so unlike the cloak-only design
+; there is no question of an invisible surface swallowing clicks over the
+; board. (The tracker's overlay is created WS_EX_TRANSPARENT anyway.)
+;
+; ── THE LEDGER IS THE CONTRACT ────────────────────────────────────────────────
+; Only windows THIS script concealed are ever shown again, and every one of them
+; is recorded. A tracker window that was already hidden when F3 was pressed is
+; never in the ledger and so is never revealed -- showing it would be this
+; script overruling the tracker about the tracker's own interface.
+;
+; The one case the ledger cannot separate: a window we hid that the tracker
+; would ALSO have hidden by now, of its own accord -- the overlay after you
+; leave a match, say. Showing it briefly is the wrong answer, and there is no
+; way to ask. It costs a frame of an overlay that has nothing in it to draw, and
+; the tracker's next update puts it back where it wants it. Worth knowing about;
+; not worth machinery.
+global _hdtHiddenByUs := Map()   ; hwnd -> TickCount when we concealed it
+global _hdtReHideCount := Map()  ; hwnd -> times the tracker has re-shown it
+
+; The tracker's top-level windows. Helper and IME windows are excluded, as are
+; zero-size ones -- WPF creates several that are not surfaces anybody sees.
+GetHDTSurfaces(includeInvisible := false) {
+    out  := []
+    prev := A_DetectHiddenWindows
+    DetectHiddenWindows true
+    try {
+        for hwnd in WinGetList("ahk_exe HearthstoneDeckTracker.exe") {
+            try {
+                ; Top-level only: GA_ROOT of a real top-level window is itself.
+                if (DllCall("user32\GetAncestor", "Ptr", hwnd, "UInt", 2, "Ptr") != hwnd)
+                    continue
+                if IsIMEWindow(hwnd)
+                    continue
+                if (!includeInvisible
+                 && !DllCall("user32\IsWindowVisible", "Ptr", hwnd))
+                    continue
+                WinGetPos(, , &w, &h, "ahk_id " . hwnd)
+                if (w < 1 || h < 1)
+                    continue
+                out.Push(hwnd)
+            }
+        }
+    }
+    DetectHiddenWindows prev
+    return out
+}
+
+; Conceal one tracker window. Cloak for the frame, SW_HIDE for the result.
+; Returns true if the window was taken off the screen.
+_HDTConcealWindow(hwnd) {
+    global _hdtHiddenByUs
+    try {
+        ; Anti-flash only. Where a cross-process cloak takes, this removes the
+        ; window before the hide lands so there is no frame in between; where
+        ; it does not, it costs three no-op DWM calls. Either way it is not
+        ; what hides the window -- the next line is.
+        CloakWindow(hwnd)
+        DllCall("ShowWindow", "Ptr", hwnd, "Int", 0)      ; SW_HIDE
+        _hdtHiddenByUs[hwnd] := A_TickCount
+        return true
+    }
+    return false
+}
+
+; Conceal every visible tracker window. Returns how many.
+HDT_Hide() {
+    global State, CFG, _hdtHiddenByUs
+    n := 0
+    for hwnd in GetHDTSurfaces() {
+        if _HDTConcealWindow(hwnd)
+            n++
+    }
+    State.hdtHidden := true
+    SetTimer(HDTHideWatch, CFG.hdtHideWatchMs)
+    _FSLog("HDT-HIDE concealed " . n . " tracker window(s)")
+    return n
+}
+
+; Give back exactly what we concealed. Safe to call at any time, from any state.
+HDT_Show() => HDTReleaseAll()
+
+HDTReleaseAll() {
+    global State, _hdtHiddenByUs, _hdtReHideCount
+    try SetTimer(HDTHideWatch, 0)
+    n := 0
+    if _hdtHiddenByUs.Count {
+        for hwnd, at in _hdtHiddenByUs.Clone() {
+            try {
+                ; Uncloak BEFORE showing, so the window is not shown-but-cloaked
+                ; for a frame on the systems where the cloak did take.
+                ;
+                ; force: the shared cloak ledger is pruned by other subsystems,
+                ; and a window we know we cloaked must come back whether or not
+                ; that ledger still agrees.
+                UncloakWindow(hwnd, true)
+                if DllCall("user32\IsWindow", "Ptr", hwnd)
+                    DllCall("ShowWindow", "Ptr", hwnd, "Int", 8)   ; SW_SHOWNA
+                n++
+            }
+        }
+        _hdtHiddenByUs.Clear()
+        _FSLog("HDT-SHOW released " . n . " tracker window(s)")
+    }
+    ; SW_SHOWNA, not SW_SHOW: the tracker's overlay is created WS_EX_NOACTIVATE
+    ; and neither window should steal the foreground from a game in progress.
+    ; Pressing F3 asks to SEE the tracker, not to be taken to it.
+    try _hdtReHideCount.Clear()
+    State.hdtHidden := false
+    return n
+}
+
+; While F3 has the tracker hidden, catch windows BORN on the hidden side.
+;
+; The tracker re-creates panels as a match progresses -- a Battlegrounds
+; leaderboard appears at the start of a lobby, a combat simulation panel when a
+; fight resolves. Without this, F3 would hide what was on screen at the moment it
+; was pressed and then leak every new panel back onto it.
+;
+; Runs ONLY while hidden. Showing stops it, and so does the tracker exiting.
+HDTHideWatch() {
+    global State, CFG, _hdtHiddenByUs, _hdtReHideCount
+    if !State.hdtHidden {
+        SetTimer(HDTHideWatch, 0)
+        return
+    }
+    if !HDTRunning() {
+        ; The tracker exited while hidden. Drop the ledger rather than keep it:
+        ; those window handles are dead, and a tracker started again later must
+        ; come up visible, not inherit a hide the user asked for in a previous
+        ; life of the process.
+        _hdtHiddenByUs.Clear()
+        _hdtReHideCount.Clear()
+        State.hdtHidden := false
+        SetTimer(HDTHideWatch, 0)
+        _FSLog("HDT-HIDE the tracker exited while hidden -- F3 reset to showing")
+        return
+    }
+
+    ; GetHDTSurfaces returns only VISIBLE windows, and everything we concealed
+    ; is hidden -- so anything this loop sees is either brand new or something
+    ; the tracker has shown again behind our back. Both want concealing; only
+    ; the second is worth counting.
+    for hwnd in GetHDTSurfaces() {
+        if _hdtHiddenByUs.Has(hwnd) {
+            ; It came back. The tracker re-shows its overlay on game-state
+            ; changes -- a lobby starting, a combat resolving -- and that is
+            ; legitimate behaviour on its part, not a fight.
+            ;
+            ; CAPPED ANYWAY. If it really is a fight, one of the two has to
+            ; stop, and it should be the one that is not the tracker's own idea
+            ; of what its interface should be doing. A visible overlay is a
+            ; cosmetic complaint; an overlay flickering at 400ms for the rest of
+            ; the session is unusable, and it would be this script doing it.
+            n := _hdtReHideCount.Get(hwnd, 0)
+            if (n >= CFG.hdtReHideMax) {
+                if (n = CFG.hdtReHideMax) {
+                    _hdtReHideCount[hwnd] := n + 1
+                    _FSLog("HDT-HIDE hwnd=" . hwnd . " has been re-shown by the"
+                         . " tracker " . n . " times while F3 had it hidden --"
+                         . " standing down and leaving it visible rather than"
+                         . " flickering it for the rest of the session. Press"
+                         . " F3 twice to try again.")
+                }
+                continue
+            }
+            _hdtReHideCount[hwnd] := n + 1
+            _HDTConcealWindow(hwnd)
+            continue
+        }
+        if _HDTConcealWindow(hwnd)
+            _FSLog("HDT-HIDE concealed a tracker window created while hidden"
+                 . " hwnd=" . hwnd)
+    }
+}
+
+; ------------------------------------------------------------------------------
+; Choosing, once per session
+; ------------------------------------------------------------------------------
+
+; Latch the session's overlay and stand the other one down.
+;
+; This is the ONLY place State.trackerMode is written. Everything that depends on
+; the choice reads it, and the standing-down that has to accompany a choice
+; happens here rather than at each call site, so it cannot be forgotten at one of
+; them.
+SetTrackerMode(mode, why := "") {
+    global State
+    if (mode != "firestone" && mode != "hsreplay" && mode != "none")
+        mode := "firestone"
+
+    State.trackerMode  := mode
+    State.trackerAsked := true
+    _FSLog("TRACKER this session uses " . TrackerModeLabel(mode)
+         . (why != "" ? " (" . why . ")" : ""))
+
+    ; The overlay that was not chosen is left strictly alone. For Firestone that
+    ; means switching off the subsystems that would otherwise spend the session
+    ; concealing windows nobody asked them to conceal -- including, if the user
+    ; has Overwolf running for something else entirely, windows that have nothing
+    ; to do with this script.
+    if (mode != "firestone")
+        _TrackerStandDownFirestone()
+    if (mode != "hsreplay")
+        try HDTReleaseAll()
+    return mode
+}
+
+; Switch off Firestone suppression and hand back anything it is already holding.
+;
+; ORDER IS LOAD-BEARING. The concealing subsystems are stopped first, then the
+; reveal is started -- never the reverse, and never via
+; StandDownFirestoneSubsystems, which stops the reveal as part of its own job. A
+; window that is parked off-screen and cloaked has exactly one route back, and
+; stopping that route while the window is still out there strands it: no taskbar
+; button, nothing on any monitor, and nothing left running that would ever
+; return it.
+_TrackerStandDownFirestone() {
+    global State, _fsParked, _fsHiddenByUs
+    State.fsMainLocked := false
+
+    try StopFSBurst()
+    try SetTimer(FSMainMonitor, 0)
+    try StopKillFirestoneLoading()
+    try SetTimer(SuppressFirestoneLoadingTick, 0)
+    try StopFSNotifSweeper()
+    try StopEarlyOverwolfCloak()
+    try StopLauncherHide()
+
+    try {
+        if (_fsParked.Count || _fsHiddenByUs.Count) {
+            _FSLog("TRACKER standing Firestone down with windows still"
+                 . " concealed -- revealing them before the subsystems go")
+            StartFSReveal()
+        } else {
+            StopFSReveal()
+        }
+    }
+}
+
+; Decide which overlay this session uses.
+;
+; interactive=false is for callers that must never open a dialog -- F3, which can
+; arrive at any moment including mid-match. Those callers get "" when the answer
+; is genuinely ambiguous, and treat it as "do nothing", which is the same thing
+; F3 already does before there is anything to toggle.
+ResolveTrackerMode(interactive := true) {
+    global State, CFG
+
+    if (State.trackerMode != "")
+        return State.trackerMode
+
+    ; A pinned setting skips the question entirely -- but only if the thing it
+    ; pins is actually installed. Pinning an overlay that is not there and then
+    ; silently launching nothing is the sort of failure that costs an evening.
+    switch StrLower(Trim(CFG.tracker)) {
+        case "none":
+            return SetTrackerMode("none", "Tracker=none in the settings file")
+        case "firestone":
+            if FirestoneInstalled()
+                return SetTrackerMode("firestone", "Tracker=firestone in the settings file")
+            _FSLog("TRACKER Tracker=firestone in the settings file, but no"
+                 . " Overwolf/Firestone install was found -- falling back to"
+                 . " automatic detection")
+        case "hsreplay":
+            if HDTInstalled()
+                return SetTrackerMode("hsreplay", "Tracker=hsreplay in the settings file")
+            _FSLog("TRACKER Tracker=hsreplay in the settings file, but no"
+                 . " HSReplay / Deck Tracker install was found -- falling back"
+                 . " to automatic detection")
+    }
+
+    fs  := FirestoneInstalled()
+    hdt := HDTInstalled()
+
+    if (fs && !hdt)
+        return SetTrackerMode("firestone", "the only overlay installed")
+    if (hdt && !fs)
+        return SetTrackerMode("hsreplay", "the only overlay installed")
+    if (!fs && !hdt)
+        return SetTrackerMode("none", "neither overlay is installed")
+
+    ; Both are installed, so there is a genuine question to ask.
+    if !interactive {
+        _FSLog("TRACKER both overlays are installed and no choice has been made"
+             . " yet -- deferring to the next F2, which is where the question"
+             . " belongs")
+        return ""
+    }
+    return SetTrackerMode(_ShowTrackerPicker(), "chosen at the prompt")
+}
+
+; The picker. Session-scoped by design: it is not written anywhere, and the next
+; run of the script asks again.
+global _trackerPickResult := ""
+global _trackerPickerOpen := false
+
+_ShowTrackerPicker() {
+    global CFG, _trackerPickResult, _trackerPickerOpen
+
+    ; A second F2 while the prompt is up must not open a second prompt. F2 is
+    ; declared with four threads precisely so presses are not dropped, and
+    ; without this that generosity becomes a stack of dialogs.
+    if _trackerPickerOpen {
+        _FSLog("TRACKER picker already open -- ignoring the duplicate request")
+        return "firestone"
+    }
+    _trackerPickerOpen := true
+    _trackerPickResult := ""
+
+    try {
+        ; NOT -DPIScale, unlike the HUD. The HUD sizes itself from raw monitor
+        ; pixels and has to opt out of a second round of scaling; this is an
+        ; ordinary dialog with ordinary controls, and on a 150% display it
+        ; should be 150% the size. Centring still lands correctly either way,
+        ; because the window is measured after it is built rather than
+        ; predicted from the numbers passed in.
+        g := Gui("+AlwaysOnTop -MinimizeBox -MaximizeBox"
+               , "HSBG — which overlay tonight?")
+        g.BackColor := "1B1B1B"
+        g.MarginX   := 22
+        g.MarginY   := 20
+
+        g.SetFont("s11 cWhite Bold", "Segoe UI")
+        g.Add("Text", "w440", "Firestone and the HSReplay tracker are both installed.")
+
+        g.SetFont("s9 norm cSilver", "Segoe UI")
+        g.Add("Text", "w440 y+8",
+              "Pick one for this session. Running both at once means two sets of"
+            . " panels over the same board, so HSBG uses whichever you choose"
+            . " here and leaves the other one completely alone — it is not"
+            . " launched, hidden, moved or closed.`n`n"
+            . "F3 belongs to whichever you pick: Firestone's desktop windows, or"
+            . " the tracker's overlay.`n`n"
+            . "This is not remembered. Next time HSBG starts, it asks again — set"
+            . " Tracker= in HSBG Config.ini to make a choice permanent.")
+
+        g.SetFont("s10 norm cWhite", "Segoe UI")
+        bFS  := g.Add("Button", "w210 h40 y+18 Default", "&Firestone")
+        bHDT := g.Add("Button", "w210 h40 x+20 yp", "&HSReplay tracker")
+
+        bFS.OnEvent("Click",  (*) => _TrackerPickSet(g, "firestone"))
+        bHDT.OnEvent("Click", (*) => _TrackerPickSet(g, "hsreplay"))
+        ; Closing the window is not a third option; it is "leave it as it was",
+        ; which for a script that has always launched Firestone means Firestone.
+        g.OnEvent("Close",  (*) => _TrackerPickSet(g, "firestone"))
+        g.OnEvent("Escape", (*) => _TrackerPickSet(g, "firestone"))
+
+        ; On the launch monitor, like everything else this script places.
+        GetChosenMonitorBounds(&l, &t, &monW, &monH)
+        g.Show("Hide")
+        WinGetPos(, , &gw, &gh, g)
+        g.Show("x" . (l + (monW - gw) // 2) . " y" . (t + (monH - gh) // 3))
+
+        ; Wait for an answer, but never forever: a prompt that can block F2
+        ; indefinitely is a hang, and it would be a hang with the game not
+        ; launching and no obvious cause.
+        hwnd     := g.Hwnd
+        deadline := A_TickCount + CFG.trackerPickTimeoutMs
+        while (A_TickCount < deadline) {
+            if !WinExist("ahk_id " . hwnd)
+                break
+            Sleep(40)
+        }
+        if WinExist("ahk_id " . hwnd) {
+            try g.Destroy()
+            _trackerPickResult := "firestone"
+            _FSLog("TRACKER picker timed out after " . CFG.trackerPickTimeoutMs
+                 . "ms -- defaulting to Firestone and getting on with the launch")
+        }
+    } catch as e {
+        _FSLog("TRACKER picker failed to open (" . e.Message . ") -- defaulting"
+             . " to Firestone, which is what this script did before there was"
+             . " anything to pick")
+        _trackerPickResult := "firestone"
+    } finally {
+        _trackerPickerOpen := false
+    }
+
+    return (_trackerPickResult != "") ? _trackerPickResult : "firestone"
+}
+
+_TrackerPickSet(g, mode) {
+    global _trackerPickResult
+    _trackerPickResult := mode
+    try g.Destroy()
+}
+
+; Tray menu: change the session's overlay without restarting the script.
+;
+; Clears the latch and asks again, then applies the answer immediately -- which
+; for a switch AWAY from Firestone means its windows are handed back, and for a
+; switch away from HSReplay means an F3-hidden tracker is un-hidden. Neither
+; overlay is launched or closed by this; the next F2 does that.
+ChangeSessionTracker() {
+    global State, _trackerPickerOpen
+    ; A prompt is already on screen -- from an F2 in flight, or from a second
+    ; click on this menu item. Do not open a second one, and above all do not
+    ; take the first one's default answer as if it were this one's.
+    if _trackerPickerOpen
+        return
+    fs  := FirestoneInstalled()
+    hdt := HDTInstalled()
+    if !(fs && hdt) {
+        only := fs ? "Firestone" : (hdt ? "the HSReplay tracker" : "neither overlay")
+        try BgHUD.Show("Only " . only . " is installed — nothing to choose", 2500)
+        return
+    }
+    State.trackerMode  := ""
+    State.trackerAsked := false
+    mode := SetTrackerMode(_ShowTrackerPicker(), "changed from the tray menu")
+    try BgHUD.Show("This session: " . TrackerModeLabel(mode), 2000)
+}
+
+; ------------------------------------------------------------------------------
+; The managed set — what this script is allowed to touch
+; ------------------------------------------------------------------------------
+;
+; ONE LIST, AND IT IS SHORT ON PURPOSE.
+;
+; Everything this script conceals, reveals, moves, minimises or closes belongs to
+; a process on this list. Anything else on the machine -- a different tracker, a
+; streaming overlay, Discord, a frame counter, whatever the user runs alongside
+; their game -- is out of scope, and the window hook returns before it can look
+; at it.
+;
+; That was already true: every branch in OWCreateHookProc tests the executable
+; name before it acts, and the last of them falls through to a bare return. But
+; "true because six separate conditions happen to agree" is a property that can
+; be lost by one careless edit, and it is not something a user can be shown. A
+; single named gate makes it structural, and gives the log something to say when
+; somebody asks whether this script is what is interfering with their overlay.
+;
+; The tracker is NOT on this list. F3 cloaks its windows and nothing else in the
+; script ever addresses them, so it has no business in the hook.
+_IsScriptManagedExe(exe) {
+    static managed := Map(
+        "hearthstone.exe",        true,
+        "battle.net.exe",         true,
+        "battle.net helper.exe",  true,
+        "battle.net launcher.exe", true,
+        "agent.exe",              true,
+        "overwolf.exe",           true,
+        "overwolfbrowser.exe",    true,
+        "overwolflauncher.exe",   true,
+        "overwolfhelper.exe",     true
+    )
+    return managed.Has(StrLower(exe))
+}
+
+; Record, once per executable, that a foreign window was seen and left alone.
+;
+; Rate-limited to one line per process for the life of the session. The point is
+; a log that can answer "did HSBG touch my overlay?" with evidence, not a log
+; that fills with one line per window event.
+_TrackerNoteForeignWindow(exe) {
+    static noted := Map()
+    if noted.Has(exe)
+        return
+    noted[exe] := true
+    _FSLog("SCOPE saw a window belonging to " . exe . " -- not a process this"
+         . " script manages, so it was ignored. Nothing owned by it is ever"
+         . " moved, hidden, cloaked or closed.")
+}
+
+; ------------------------------------------------------------------------------
+; Shutdown
+; ------------------------------------------------------------------------------
+
+; Called from F4 and from ExitCleanup. Safe to call repeatedly, safe to call
+; when no tracker has ever run, and safe to call under Firestone.
+;
+; TWO JOBS, AND ONLY THE FIRST IS UNCONDITIONAL.
+;
+;   1. Un-cloak anything F3 hid. This must happen on EVERY exit path, including
+;      the ones nobody plans -- tray exit, reload, an uncaught error. A cloak
+;      is stored in the window manager, not in this process, so it survives the
+;      script that applied it: quit while the tracker is hidden and the user is
+;      left with a running tracker they cannot see, no taskbar route back, and
+;      no reason to connect it to a script they just closed.
+;
+;   2. Close the tracker, but only when the user asked for that (hdtCloseOnF4)
+;      AND F2 is what started it. A tracker that was already open when the
+;      script started belongs to the user's session, not to this one.
+_TrackerShutdown() {
+    global CFG, State
+
+    try HDTReleaseAll()
+
+    if !(CFG.hdtCloseOnF4 && State.hdtLaunchedByUs)
+        return false
+    if !HDTRunning()
+        return false
+
+    ; GRACEFUL FIRST. The tracker writes match statistics as it plays, and a
+    ; forced kill mid-write is how a stats file gets truncated. taskkill without
+    ; /F asks the window to close; /F is the fallback for a tracker that will
+    ; not, after it has been given a fair chance.
+    try Run('taskkill /IM HearthstoneDeckTracker.exe /T', , "Hide")
+    deadline := A_TickCount + 2000
+    while (A_TickCount < deadline) {
+        if !ProcessExist("HearthstoneDeckTracker.exe")
+            break
+        Sleep(100)
+    }
+    if ProcessExist("HearthstoneDeckTracker.exe") {
+        _FSLog("HDT-SHUTDOWN the tracker did not close when asked -- forcing it")
+        try Run('taskkill /F /IM HearthstoneDeckTracker.exe /T', , "Hide")
+    } else {
+        _FSLog("HDT-SHUTDOWN tracker closed (F2 started it, and"
+             . " HDTCloseOnF4 is on)")
+    }
+    State.hdtLaunchedByUs := false
+    return true
 }
 
 ; ==============================================================================
@@ -4218,6 +5474,29 @@ OWCreateHookProc(hWinEventHook, event, hwnd, idObject, idChild, dwEventThread, d
         try exe := WinGetProcessName("ahk_id " . hwnd)
         if (exe = "")
             return
+
+        ; ══════════════════════════════════════════════════════════════════
+        ; NOTHING OUTSIDE THE MANAGED SET GETS PAST THIS LINE
+        ; ══════════════════════════════════════════════════════════════════
+        ; Every branch below already tests the executable name before it acts,
+        ; and the last of them falls through to a bare return -- so a foreign
+        ; window was never touched. But that was a property held up by six
+        ; separate conditions agreeing with each other, which is exactly the
+        ; kind of property one careless edit removes, and it was not something
+        ; a user could be shown.
+        ;
+        ; This makes it structural and it makes it evidence. A user running a
+        ; different tracker, a streaming overlay, a frame counter or anything
+        ; else alongside their game can now be told, from their own log, that
+        ; this script saw the window and declined it. See _IsScriptManagedExe.
+        ;
+        ; The HSReplay tracker is deliberately NOT in the managed set. F3
+        ; cloaks its windows directly and nothing else in this script ever
+        ; addresses them, so it has no business being handled here.
+        if !_IsScriptManagedExe(exe) {
+            _TrackerNoteForeignWindow(exe)
+            return
+        }
 
         ; ---- EARLIEST-POSSIBLE FS BIRTH CLOAK ----
         ; While LOCKED, cloak a newly CREATED Overwolf window RIGHT NOW,
@@ -11467,7 +12746,7 @@ SC03C::Hotkey_F2()
 #HotIf
 
 Hotkey_F2() {
-    global State, Cache, Launch, CFG, _smLastTick
+    global State, Cache, Launch, CFG, _smLastTick, _hdtGateSince
     _HotkeyTone("F2")
 
 
@@ -11475,6 +12754,23 @@ Hotkey_F2() {
         StartupCleanup()
         PreCachePaths()
     }
+
+    ; ── WHICH OVERLAY IS THIS SESSION'S? ────────────────────────────────────
+    ; Answered once, here, before anything is started -- because the answer
+    ; decides what gets started. If both overlays are installed this opens the
+    ; picker and waits for it; every other case resolves silently.
+    ;
+    ; DELIBERATELY BEFORE THE PIPELINE GUARD. The guard's job is to stop a
+    ; second F2 from re-entering a live launch, and the picker's own
+    ; _trackerPickerOpen flag already handles a second press landing while the
+    ; prompt is up. Asking first also means the prompt cannot appear halfway
+    ; through a launch that has already begun placing windows.
+    ResolveTrackerMode()
+
+    ; Clear the tracker Play-gate clock. See _hdtGateSince: a launch abandoned
+    ; while the gate was waiting would otherwise hand this launch an expired
+    ; ceiling, and the wait would be skipped at exactly the moment it mattered.
+    _hdtGateSince := 0
 
     ; A live pipeline blocks re-entry even if State.f2Active was cleared
     ; mid-launch (the F3 unlock does that by long-standing design). BUT: if
@@ -11512,15 +12808,24 @@ Hotkey_F2() {
 
     if isRestart {
         ; ── RESTART PATH ─────────────────────────────────────────────────────
-        KillFirestoneLoadingExisting()
+        ; Every Firestone-specific call below is gated on Firestone being this
+        ; session's overlay. Under HSReplay -- or under no overlay at all --
+        ; none of the suppression machinery arms, so nothing spends the session
+        ; watching for windows that are never going to exist, and an Overwolf
+        ; the user happens to be running for something else is not interfered
+        ; with. StartHSCloaker is NOT gated: it belongs to Hearthstone.
+        if TrackerIsFirestone() {
+            KillFirestoneLoadingExisting()
 
-        if State.fsMainLocked {
-            LockFirestoneMain()
+            if State.fsMainLocked {
+                LockFirestoneMain()
+            }
         }
 
         StartHSCloaker()
 
-        StartLauncherHide()
+        if TrackerIsFirestone()
+            StartLauncherHide()
 
         ; StartFSNotifSweeper()   ; removed – already running from startup
 
@@ -11548,66 +12853,92 @@ Hotkey_F2() {
         ; works.
         Launch.skipLoginDetect := false
 
-        EnsureFirestoneSettings()
+        if TrackerIsFirestone() {
+            EnsureFirestoneSettings()
 
-        StartEarlyOverwolfCloak()
+            StartEarlyOverwolfCloak()
 
-        StartKillFirestoneLoading()
+            StartKillFirestoneLoading()
 
-        ; The restart path deliberately does NOT kill Overwolf, so Firestone is
-        ; normally still running and this is a no-op. It is armed anyway for
-        ; the case where Overwolf died or was closed between sessions: without
-        ; it, a restart would leave you with no overlay and nothing watching
-        ; for that. LaunchFirestoneNow() self-checks FirestoneAppRunning().
-        ; The deferred launch is no longer used; we launch Firestone immediately
-        ; if it isn't running.
-        ; ── FIRESTONE STARTS BEFORE HEARTHSTONE, AND THAT ORDER MATTERS ─────
-        ; Firestone reads the game's memory to drive its overlay. Starting it
-        ; BEFORE Hearthstone exists lets it be in place and waiting as the game
-        ; comes up; starting it midway through Hearthstone's initialisation
-        ; makes it attach to a process that is not ready, which fails with
-        ; "CRITICAL ERROR: Could not read the game's memory" and leaves the user
-        ; with no overlay for the session.
-        ;
-        ; A delay was briefly introduced here to move Firestone's windows out of
-        ; the busiest part of the launch, so a birth-time concealment race had
-        ; less to compete with. It fixed a cosmetic flash and broke the product.
-        ; See CFG.fsLaunchDelayMs, which is 0 for this reason.
-        if !FirestoneAppRunning() {
-            _FSScheduleLaunch()
+            ; The restart path deliberately does NOT kill Overwolf, so Firestone is
+            ; normally still running and this is a no-op. It is armed anyway for
+            ; the case where Overwolf died or was closed between sessions: without
+            ; it, a restart would leave you with no overlay and nothing watching
+            ; for that. LaunchFirestoneNow() self-checks FirestoneAppRunning().
+            ; The deferred launch is no longer used; we launch Firestone immediately
+            ; if it isn't running.
+            ; ── FIRESTONE STARTS BEFORE HEARTHSTONE, AND THAT ORDER MATTERS ─────
+            ; Firestone reads the game's memory to drive its overlay. Starting it
+            ; BEFORE Hearthstone exists lets it be in place and waiting as the game
+            ; comes up; starting it midway through Hearthstone's initialisation
+            ; makes it attach to a process that is not ready, which fails with
+            ; "CRITICAL ERROR: Could not read the game's memory" and leaves the user
+            ; with no overlay for the session.
+            ;
+            ; A delay was briefly introduced here to move Firestone's windows out of
+            ; the busiest part of the launch, so a birth-time concealment race had
+            ; less to compete with. It fixed a cosmetic flash and broke the product.
+            ; See CFG.fsLaunchDelayMs, which is 0 for this reason.
+            if !FirestoneAppRunning() {
+                _FSScheduleLaunch()
+            }
+        } else if TrackerIsHDT() {
+            ; ── THE TRACKER STARTS BEFORE HEARTHSTONE TOO, FOR ITS OWN REASON ──
+            ; Firestone goes first because it reads the game's memory and has to
+            ; be attached before the game is ready. The tracker goes first
+            ; because it writes log.config, which Hearthstone reads once at
+            ; start-up and never again. Different mechanism, same ordering, and
+            ; the Play press is gated on it in TryLaunchWTCG so a slow tracker
+            ; start cannot lose the race.
+            LaunchHDTNow()
         }
 
         StartHSLaunch()
 
     } else {
         ; ── FRESH LAUNCH PATH ────────────────────────────────────────────────
+        ; As on the restart path, the Firestone machinery arms only when
+        ; Firestone is this session's overlay. StartHSCloaker is Hearthstone's
+        ; and runs either way.
 
-        LockFirestoneMain()
+        if TrackerIsFirestone() {
+            LockFirestoneMain()
 
-        StartEarlyOverwolfCloak()
+            StartEarlyOverwolfCloak()
+        }
 
         StartHSCloaker()
 
-        StartKillFirestoneLoading()
+        if TrackerIsFirestone() {
+            StartKillFirestoneLoading()
 
-        StartLauncherHide()
+            StartLauncherHide()
 
-        ; StartFSNotifSweeper()   ; removed – already running from startup
+            ; StartFSNotifSweeper()   ; removed – already running from startup
 
-        EnsureFirestoneSettings()
+            EnsureFirestoneSettings()
+        }
 
         if Launch.bnetWasRunning
             Launch.skipLoginDetect := true
 
-        ; ── LAUNCH ORDER ──────────────────────────────────────────────────────
-        ; Firestone is launched immediately, at the same time as Battle.net.
-        ; The old deferred launch (waiting for Hearthstone.exe) is removed.
-        ; Launch Firestone if it isn't already running.
-        if !FirestoneAppRunning() {
-            ; Same ordering as the restart path above: Firestone goes up
-            ; before Hearthstone so it can attach cleanly. See
-            ; _FSScheduleLaunch and CFG.fsLaunchDelayMs.
-            _FSScheduleLaunch()
+        if TrackerIsFirestone() {
+            ; ── LAUNCH ORDER ──────────────────────────────────────────────────
+            ; Firestone is launched immediately, at the same time as Battle.net.
+            ; The old deferred launch (waiting for Hearthstone.exe) is removed.
+            ; Launch Firestone if it isn't already running.
+            if !FirestoneAppRunning() {
+                ; Same ordering as the restart path above: Firestone goes up
+                ; before Hearthstone so it can attach cleanly. See
+                ; _FSScheduleLaunch and CFG.fsLaunchDelayMs.
+                _FSScheduleLaunch()
+            }
+        } else if TrackerIsHDT() {
+            ; Same position in the sequence, same reason for being early: the
+            ; tracker writes log.config and Hearthstone reads it once, at
+            ; start-up. See _TrackerPlayGateClear, which holds the Play press
+            ; until this has actually come up.
+            LaunchHDTNow()
         }
         ; Start the Hearthstone launch pipeline (Battle.net → Play → HS)
         StartHSLaunch()
@@ -11690,6 +13021,16 @@ Hotkey_F4() {
 
         try Run('taskkill /F /IM Hearthstone.exe /T',         , "Hide")
 
+        ; ── THE TRACKER IS NOT KILLED BY DEFAULT ────────────────────────────
+        ; It is also a collection browser, a deck editor and a stats window, and
+        ; people leave it open between sessions on purpose. F4 means "end this
+        ; Battlegrounds session", not "close everything I have open".
+        ;
+        ; What this ALWAYS does is give back a tracker that F3 left hidden --
+        ; a cloaked window outliving the script that cloaked it is a window
+        ; nobody can bring back. See _TrackerShutdown.
+        try _TrackerShutdown()
+
         ; Verify the kill before trusting it. taskkill is issued asynchronously, so
         ; "we asked" is not "it is gone". Only if Overwolf is genuinely dead is the
         ; restore skipped; otherwise a failed kill would leave its windows parked
@@ -11762,8 +13103,72 @@ FSMainHasOpened() {
     return _fsMainEverOpened
 }
 
+; ── F3 under HSReplay — hide / un-hide the tracker ──────────────────────────
+;
+; The Firestone version of F3 hides DESKTOP windows and never touches the
+; in-game overlay, because under Firestone the overlay is the thing you are
+; playing with and the desktop windows are the clutter. Under HSReplay the
+; relationship is the other way round: the overlay is what is on your board, so
+; that is what F3 is for.
+;
+; Everything about how the concealment works -- cloaking rather than hiding, the
+; ledger of what we concealed, the watcher for panels created while hidden -- is
+; in section 7B. This is only the key handler.
+Hotkey_F3_HDT() {
+    global State
+
+    ; INERT UNTIL THERE IS SOMETHING TO TOGGLE, exactly as the Firestone branch
+    ; is inert until Main exists. A tone that says "that did something" when
+    ; nothing happened is worse than silence.
+    if !HDTRunning()
+        return
+    if (!State.hdtHidden && !GetHDTSurfaces().Length)
+        return
+
+    _HotkeyTone("F3")
+
+    ; Debounce, for the same reason the Firestone branch debounces: a held or
+    ; spammed key should not turn into a burst of DWM attribute changes on a
+    ; window somebody else's process is actively drawing into.
+    static lastPress := 0
+    if (A_TickCount - lastPress < 250)
+        return
+    lastPress := A_TickCount
+
+    try {
+        if State.hdtHidden {
+            HDT_Show()
+            BgHUD.Show("Tracker shown", 800)
+        } else {
+            n := HDT_Hide()
+            BgHUD.Show(n ? "Tracker hidden" : "Nothing to hide", 800)
+        }
+    } catch {
+        ; FAIL TOWARDS VISIBLE. Whatever went wrong, an overlay the user cannot
+        ; get back is the worse outcome of the two.
+        try HDT_Show()
+        BgHUD.Show("F3 error – tracker restored", 1200)
+    }
+}
+
 Hotkey_F3() {
     global State
+
+    ; ── F3 BELONGS TO WHICHEVER OVERLAY THIS SESSION CHOSE ──────────────────
+    ; The choice is normally made at F2. F3 can arrive before that -- and can
+    ; arrive at any moment, including mid-match -- so it resolves the mode
+    ; NON-INTERACTIVELY: if the answer is unambiguous (one overlay installed, or
+    ; a pinned setting) it is used, and if it is genuinely ambiguous F3 does
+    ; nothing rather than opening a dialog over a live game.
+    mode := State.trackerMode
+    if (mode = "")
+        mode := ResolveTrackerMode(false)
+    if (mode = "hsreplay") {
+        Hotkey_F3_HDT()
+        return
+    }
+    if (mode != "firestone")
+        return          ; "none", or undecided: nothing for F3 to own
 
     ; ── F3 IS COMPLETELY INERT UNTIL FIRESTONE MAIN EXISTS ──────────────────
     ; Before that point there is nothing for it to toggle, and every part of
@@ -11933,6 +13338,7 @@ try {
     A_TrayMenu.Insert("1&", "What is under my cursor?", (*) => WhatIsUnderCursor())
     A_TrayMenu.Insert("1&", "Test hotkey sound", (*) => TestHotkeySound())
     A_TrayMenu.Insert("1&", "Reload settings", (*) => ReloadUserConfig())
+    A_TrayMenu.Insert("1&", "Overlay for this session…", (*) => ChangeSessionTracker())
     A_TrayMenu.Insert("1&", "Open settings (HSBG Config.ini)", (*) => OpenConfigFile())
 }
 
@@ -12157,6 +13563,16 @@ ExitCleanup(*) {
     try ResumeWSearch()
     try UnmuteHearthstone()
 
+    ; FIRST, BEFORE ANYTHING ELSE HERE CAN THROW.
+    ;
+    ; A DWM cloak lives in the window manager, not in this process, so it
+    ; outlives the script that applied it. Exiting with the tracker hidden by F3
+    ; leaves a running tracker that is invisible on every monitor, has no
+    ; taskbar route back, and gives its user no reason to connect any of it to a
+    ; script they just closed. This is the only line that prevents that, and it
+    ; runs on every exit path -- F4, tray exit, reload, a crash on the way out.
+    try HDTReleaseAll()
+
     try StopOWCreateHook()
     try StopEarlyOverwolfCloak()
     try SetTimer(LateHSWatch, 0)
@@ -12302,20 +13718,74 @@ StartupCleanup() {
         _FSLog("STARTUP " . HSBG_BUILD . " settings in force: MonitorLock="
              . (CFG.lockWindowsToChosenMonitor ? 1 : 0) . " HotkeyAudio="
              . (CFG.hotkeyAudio ? 1 : 0) . " vol=" . CFG.hotkeyAudioVolume
-             . " freqMode=" . CFG.hotkeyFreqMode . " from " . _ConfigPath())
+             . " freqMode=" . CFG.hotkeyFreqMode . " Tracker=" . CFG.tracker
+             . " from " . _ConfigPath())
+    }
+
+    ; ── WHAT IS INSTALLED, AND WHAT THIS SCRIPT WILL TOUCH ──────────────────
+    ; Recorded at start-up so that the first question anyone asks about an
+    ; overlay -- "did HSBG find it?", "is HSBG the thing interfering with it?"
+    ; -- is already answered in the log before it is asked.
+    try {
+        _FSLog("STARTUP overlays detected: Firestone="
+             . (FirestoneInstalled() ? "yes" : "no")
+             . " HSReplay=" . (HDTInstalled() ? "yes" : "no")
+             . " -- Tracker=" . CFG.tracker)
+        _FSLog("STARTUP this script only ever moves, hides, cloaks or closes"
+             . " windows belonging to: Hearthstone, Battle.net, the Blizzard"
+             . " Agent and Overwolf. Every other process on this machine is"
+             . " ignored by the window hook. The HSReplay tracker is touched"
+             . " only by F3, and only to cloak and un-cloak.")
     }
 }
 
 ; One‑shot startup warmup: resolve and cache Overwolf/Firestone paths.
 PreCachePaths() {
+    global CFG, State
     GetOverwolfPath()
     GetFirestoneCmd()
-    if !ProcessExist("Overwolf.exe")
+
+    ; The tracker lookup goes here for the same reason the Firestone one does:
+    ; it walks the disk and the registry, and the place for that is a warmup,
+    ; not the middle of an F2 press. Cached after this whether it found
+    ; anything or not.
+    ;
+    ; It also has to happen BEFORE the first ResolveTrackerMode, because
+    ; "is the tracker installed?" is half of the question that decides whether
+    ; the picker appears at all.
+    try GetHDTCmd()
+
+    ; EnsureFirestoneSettings edits Firestone's own JSON configuration. That is
+    ; a reasonable thing to do to an overlay this script is about to launch and
+    ; manage, and an unreasonable thing to do to one it has been told to leave
+    ; alone -- so it is skipped once the session has settled on anything else.
+    ; An undecided session ("" -- both installed, nobody has pressed F2 yet)
+    ; still runs it, because Firestone remains a live possibility.
+    if (!ProcessExist("Overwolf.exe")
+     && State.trackerMode != "hsreplay" && State.trackerMode != "none")
         EnsureFirestoneSettings()
 }
 
 ; Run the first‑use‑sensitive startup work immediately.
 StartupCleanup()
+
+; ── SETTLE THE OVERLAY QUESTION NOW, IF IT CAN BE SETTLED WITHOUT ASKING ─────
+; Non-interactive on purpose. Only one overlay installed, or a pinned Tracker=
+; setting, and the answer is known before the first key is pressed -- which
+; means the Firestone subsystems below are never armed on a machine that is
+; going to use the HSReplay tracker, rather than being armed and then switched
+; off at the first F2.
+;
+; With BOTH installed this resolves to nothing and changes nothing. That
+; question belongs to F2, where there is a user present to answer it; asking it
+; at start-up would put a dialog on screen before anyone has pressed anything.
+;
+; BEFORE PreCachePaths, deliberately. The warmup patches Firestone's own
+; settings file, and doing that on a machine that has already been told to use
+; the HSReplay tracker would be this script editing the configuration of a
+; program it was asked not to run.
+try ResolveTrackerMode(false)
+
 PreCachePaths()
 
 ; Create the ITaskbarList object ONCE, here, before anything can reach it from
@@ -12334,7 +13804,12 @@ StartOWCreateHook()
 ; and no Firestone install: these timers exist solely to manage Firestone's
 ; windows, and on such a machine they would poll an empty window list forever.
 ; The check is a cached path lookup, so it costs one filesystem probe.
-if FirestoneInstalled()
+;
+; It is also not armed when this session has already settled on something other
+; than Firestone. An installed-but-unchosen Firestone is somebody else's
+; program: if the user has Overwolf open for a different game entirely, a guard
+; that closes Firestone loading popups has no business running.
+if (FirestoneInstalled() && State.trackerMode != "hsreplay" && State.trackerMode != "none")
     SetTimer(SuppressFirestoneLoadingTick, 100)
 
 ; Deferred 3s: warm PowerShell once after startup settles.
