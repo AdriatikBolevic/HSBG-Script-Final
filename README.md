@@ -28,10 +28,22 @@ That is the whole of it. Everything below is detail for when you want it.
 
 **Requirements** · Windows 10/11 · AutoHotkey v2.0 · Administrator rights (for F1's firewall rule and for pausing the Windows Search indexer) · Firestone is **optional** — without it, everything else works normally.
 
+### What's on out of the box
+
+Two things are **on by default**, and both can be switched off in `HSBG Config.ini` — tray icon → *Open settings*. They are the only on/off switches in that file; everything else in it tunes the sound.
+
+| Setting | What it does while it's on | Off |
+|---|---|---|
+| **`MonitorLock`** | Battle.net, the Blizzard Update Agent, Hearthstone and the on-screen status text all open on the monitor you started the script from. Start it on the screen you want to play on and the rest follows. Firestone's own windows are deliberately exempt, so they stay wherever you put them — usually a second screen. | `MonitorLock=0` — every window opens wherever Windows and the applications decide, and the script never moves anything. Makes no difference on a single monitor. |
+| **`HotkeyAudio`** | A short, deep guitar note plays each time a hotkey fires, so you know the press registered without looking away from the game. Pitch and volume are yours to change (`HotkeyAudioVolume`, `HotkeyFreqMode`), or point `HotkeySoundFile` at a `.wav` of your own. | `HotkeyAudio=0` — silent. |
+
+Change either one, then use **"Reload settings"** in the tray menu to apply it without restarting. Full detail on every setting is under [Settings](#settings).
+
 ---
 
 ## Contents
 
+- [What's on out of the box](#whats-on-out-of-the-box)
 - [Hotkeys in detail](#hotkeys-in-detail)
 - [What it does with each application](#what-it-does-with-each-application)
 - [Settings](#settings)
@@ -65,7 +77,7 @@ The script identifies Hearthstone's live game-server connection and blocks that 
 
 Blizzard's login and services connection (TCP 1119) is deliberately left alive, so there is no re-authentication and no risk to your seat in the lobby. Hearthstone's audio is muted for the duration and clicks on the game window are swallowed, so the skip is silent and cannot be disturbed by a stray click.
 
-Default hold: 1.5 seconds. Cooldown: 2 seconds between presses.
+Default hold: 2.5 seconds, then clicks stay swallowed for a further 1.5 seconds while the client reconnects — lifting the block is the *start* of the reconnect, not the end of the skip, and a click landing in that window goes into a board you cannot see yet. Cooldown: 0.75 seconds between presses.
 
 ### `F2` — Launch or restart
 
@@ -130,7 +142,7 @@ Four applications are involved in a Battlegrounds session. Left alone they produ
 | Setting | Default | Effect |
 |---|---|---|
 | `MonitorLock` | `1` | Put Battle.net, the Update Agent, Hearthstone and the status text on the monitor you started the script from. `0` leaves every window where it opens and moves nothing. No effect on a single monitor. |
-| `HotkeyAudio` | `0` | Play a short, deep note when a hotkey fires, so a press is confirmed without looking away from the game. |
+| `HotkeyAudio` | `1` | Play a short, deep note when a hotkey fires, so a press is confirmed without looking away from the game. `0` for silence. |
 | `HotkeyAudioVolume` | `25` | `0`–`100`. Ignored while `HotkeyAudio=0`. |
 | `HotkeySoundFile` | *(empty)* | Path to your own PCM `.wav`, played for every hotkey instead of the built-in note. Falls back to the built-in tone if the file is missing. |
 | `HotkeyFreqMode` | `singular` | `singular` — every key sounds the same note. `varied` — each key gets its own pitch. |
@@ -144,7 +156,7 @@ Settings are read at start-up. Use **"Reload settings"** in the tray menu to app
 <details>
 <summary><b>About the built-in notes</b></summary>
 
-They are synthesised rather than beeped, because `SoundBeep` produces a square wave that at these frequencies sounds like a fault rather than a note. Each one is built as a plucked, overdriven bass string: five harmonics with the higher partials decaying faster (that falling brightness is what the ear reads as a *pluck*), a valve-style soft clip for weight, a pick attack, and a release taper so the note ends rather than being cut off. The default pitches sit between 55 Hz and 110 Hz — below anything in Hearthstone's own mix, so they cut through without competing with it. They are generated on first use and cached, so switching audio on costs about a second of one start-up and nothing afterwards.
+They are synthesised rather than beeped, because `SoundBeep` produces a square wave that at these frequencies sounds like a fault rather than a note. Each one is built as a plucked, overdriven bass string: five harmonics with the higher partials decaying faster (that falling brightness is what the ear reads as a *pluck*), a valve-style soft clip for weight, a pick attack, and a release taper so the note ends rather than being cut off. The default pitches sit between 55 Hz and 110 Hz — below anything in Hearthstone's own mix, so they cut through without competing with it. They are generated on first use and cached, so they cost about a second on one start-up and nothing afterwards.
 
 </details>
 
@@ -198,8 +210,8 @@ That specific pattern is not an overlapping window; moving the cursor would not 
 **Clicks on Hearthstone do nothing (general).**
 Tray icon → **"What is under my cursor?"**, then hold the cursor over the dead spot. It names the window that will receive the click, whether it is cloaked, whether it is topmost, and whether it has focus — which separates an invisible window over the game from the game not being foreground from the script's own click shield. The same detail goes to the log as `CURSOR-PROBE`.
 
-**You turned the sound on and heard nothing.**
-Tray icon → **"Test hotkey sound"**. It reports on screen whether the script actually read `HotkeyAudio=1`, names the config file it read, and plays the note. If you set `HotkeySoundFile`, check the path points at a real PCM `.wav` — the script falls back to the built-in tone when it does not, which sounds exactly like the setting being ignored.
+**The hotkeys are silent.**
+The note is on by default, so hearing nothing means either the setting was turned off or the script did not read the file you think it did. Tray icon → **"Test hotkey sound"**: it reports on screen whether the script actually read `HotkeyAudio=1`, names the config file it read, and plays the note. If you set `HotkeySoundFile`, check the path points at a real PCM `.wav` — the script falls back to the built-in tone when it does not, which sounds exactly like the setting being ignored.
 
 **You don't have Firestone.**
 Nothing to do. The script detects the missing install at start-up, logs `STARTUP no Overwolf/Firestone install detected`, and leaves every Firestone subsystem dormant. F1, F2 and F4 work normally; F3 has nothing to toggle.
@@ -239,7 +251,9 @@ Everything not in `HSBG Config.ini` lives in the `CFG` block at the top of the s
 
 | Setting | Default | Effect |
 |---|---|---|
-| `forcefulHoldMs` | `1500` | How long F1 holds the connection block. The single knob controlling skip duration. |
+| `forcefulHoldMs` | `2500` | How long F1 holds the connection block. **Do not shorten this to make F1 feel faster.** A firewall block drops packets silently, so the client only notices when its own timeout expires; mid-combat it shrugs off a short outage and no skip happens at all. A press that fails costs more time than the longer hold does. |
+| `f1PostReleaseShieldMs` | `1500` | How long clicks stay swallowed *after* the block lifts, covering the reconnect. Raise if clicks still land early; `0` ends the shield with the block. |
+| `loginWaitCeilingMs` | `1800000` | How long the launch may wait for you to sign in to Battle.net before giving up and releasing F1/F2. |
 | `f1Target` | `"smart"` | Which connection F1 blocks. `"all"` is a sledgehammer fallback if `"smart"` ever picks wrong. |
 | `bnetLauncherMode` | `"visible"` | `"visible"` shows the launcher and minimises it after Play. `"minimized"` never shows it at all. |
 | `bnetRevealDwellMs` | `500` | Minimum time the launcher stays on screen before Play may fire. |
@@ -249,6 +263,8 @@ Everything not in `HSBG Config.ini` lives in the `CFG` block at the top of the s
 | `fsLaunchDelayMs` | `0` | Delay before Firestone is launched. `0` — immediately, before Hearthstone exists, which is the only ordering that lets it attach to the game reliably. Raising it risks the "could not read the game's memory" failure. |
 | `fsPopupGraceMs` | `3000` | How long a bare-`Firestone` window may hold that title before it is judged a notification rather than a Main still forming. It is concealed throughout, so this is time spent invisible. |
 | `fsBurstMs` / `fsCoastMs` / `fsSettledMs` | `10` / `50` / `250` | The three cadences of the Firestone window sweep: while windows are being created, while the launch settles, and once you are just playing. |
+| `fsNudgeCeilingMs` | `10000` | The longest a run of new Overwolf windows may keep the sweep above its settled rate. Guards against a steady trickle of window creations pinning it there for a whole session. |
+| `hsGuardFastMs` / `hsGuardIdleMs` | `50` / `1000` | How often Hearthstone's position is checked, while the game is still deciding where to open, and afterwards. |
 | `fsFollowMonitorLock` | `false` | Whether Firestone's windows are pinned to the launch monitor. |
 | `fsHealthCheckMs` | `60000` | How long after launching Firestone to check whether it actually started. |
 | `hkStuckModifierRepair` | `true` | Release a modifier key Windows reports as held when it isn't, which would otherwise make every hotkey inert. |
@@ -294,6 +310,7 @@ grep -v '^\s*;' "HSBG Script Final.ahk" | sed 's/\s\+;.*$//' | grep -v '^\s*$'
 
 - **Never** modifies Hearthstone's process priority, game files, or memory.
 - **One firewall rule**, scoped to Hearthstone's executable and to a single remote address, created and deleted per F1 press. Rules are swept at start-up and at exit, and a failsafe timer removes the block even if the F1 handler dies mid-press — an interrupted press cannot leave a connection blocked.
-- **Two Windows settings**: per-application GPU preference for Hearthstone, and the Windows Search indexer service while the game runs. Both are reversed on exit.
+- **The Windows Search indexer** is stopped while Hearthstone runs and restarted on exit.
+- **Two registry values are set and left**: Hearthstone's per-application GPU preference (high-performance), and Unity's saved display index when the monitor lock has to correct it — the latter only when the value actually differs from what is already stored. Both are settings for Hearthstone rather than for this script, so they persist deliberately; nothing else in the registry is touched.
 - **Window positions and visibility** for Battle.net, Overwolf and Firestone. Every concealment has a matching cleanup that works from an empty ledger, so a crash or a forced reload cannot leave a window unreachable.
 - **Two files**, both beside the script: `HSBG Config.ini` and `HSBG.log`.

@@ -290,8 +290,8 @@ global CFG := {
     ; and overrides both at start-up. Edit the .ini, not this -- the whole point
     ; of the file is that you never have to open an 8,000-line script to change
     ; your mind about a monitor lock. See LoadUserConfig.
-    hotkeyAudio:             false,    ; a deep guitar note when a hotkey fires.
-                                       ; OFF by default.
+    hotkeyAudio:             true,     ; a deep guitar note when a hotkey fires.
+                                       ; ON by default; HotkeyAudio=0 silences it.
     hotkeyAudioVolume:       25,       ; 0-100.
     hotkeyFreqMode:         "singular", ; "singular" or "varied" for built-in tones.
     hotkeyFreqSingular:     110.0,    ; frequency when mode is "singular".
@@ -357,24 +357,33 @@ global CFG := {
                                        ; fails to disconnect, this line says whether
                                        ; the game IP was even identified — the one
                                        ; question that matters for tuning gamePorts.
-    forcefulHoldMs:          1500,     ; F1 blackout CEILING. WAS 2500, which is
-                                       ; longer than the skip needs and long
-                                       ; enough for a slow reconnect to fail
-                                       ; outright rather than resume. The client
-                                       ; registers the drop in a few hundred ms;
-                                       ; everything after that is dead air.
-                                       ; The block is now
-                                       ; ADAPTIVE: it lifts the moment HS has
-                                       ; verifiably abandoned the connection
-                                       ; (no ESTABLISHED socket to a blocked
-                                       ; IP for f1DropConfirmMs), so an
-                                       ; end-of-turn skip releases in ~2s --
-                                       ; sooner than the old fixed 3s -- while
-                                       ; mid-COMBAT, where the client shrugs
-                                       ; off short outages (the old "needs a
-                                       ; second click"), it holds up to this
-                                       ; ceiling. The server holds your seat
-                                       ; for minutes, so 6s is safely inside.
+    forcefulHoldMs:          2500,     ; HOW LONG F1 HOLDS THE BLOCK. DO NOT CUT
+                                       ; THIS TO MAKE F1 "SNAPPIER" -- IT WAS,
+                                       ; AND IT IS THE REASON THE FIRST PRESS
+                                       ; STOPPED CATCHING.
+                                       ;
+                                       ; A firewall block DROPS packets, it does
+                                       ; not reject them. Nothing tells the
+                                       ; client its connection is gone; it finds
+                                       ; out only when its own send/receive
+                                       ; times out. Mid-combat the client shrugs
+                                       ; off a short outage and simply resumes
+                                       ; when the packets come back -- so a hold
+                                       ; that is too short produces no skip at
+                                       ; all, silently, and the user presses F1
+                                       ; a second time. That is the documented
+                                       ; historical failure of this exact knob,
+                                       ; and cutting it 2500 -> 1500 for speed
+                                       ; brought it straight back.
+                                       ;
+                                       ; A press that fails costs its own hold,
+                                       ; the cooldown, and a second press. The
+                                       ; longer hold is the FASTER setting in
+                                       ; practice. The seconds this round set
+                                       ; out to save were found elsewhere: the
+                                       ; connection lookup no longer spawns
+                                       ; PowerShell (~500ms) and the press no
+                                       ; longer runs eight netsh calls (~1s).
     f1Target:                "smart",  ; WHICH connection(s) get blocked.
                                        ;   "smart" (default) — block every non‑services
                                        ;             candidate PLUS the NEWEST
@@ -420,6 +429,23 @@ global CFG := {
                                        ;             but drops EVERYTHING incl. auth —
                                        ;             use only if "ipblock" somehow
                                        ;             doesn't drop on your machine.
+    f1PostReleaseShieldMs:   1500,     ; HOW LONG CLICKS STAY SWALLOWED AFTER THE
+                                       ; BLOCK IS LIFTED.
+                                       ;
+                                       ; Removing the firewall rule is not the end
+                                       ; of the skip -- it is the start of the
+                                       ; reconnect. The client still has to notice
+                                       ; the drop, re-establish, and replay to the
+                                       ; result, and a click landing in that window
+                                       ; goes into a board state the user cannot
+                                       ; see yet. The shield used to end the
+                                       ; instant the rule was deleted, which is
+                                       ; why it "did not extend far enough".
+                                       ;
+                                       ; Raise if clicks still land early; lower if
+                                       ; the game feels unresponsive after a skip.
+                                       ; 0 restores the old end-with-the-block
+                                       ; behaviour.
     f1AdapterHoldMs:         2000,     ; blackout for "adapter" mode. Deliberately
                                        ; a little longer than forcefulHoldMs: an
                                        ; adapter down/up costs the OS time the
@@ -427,6 +453,13 @@ global CFG := {
                                        ; makes both F1 methods produce roughly the
                                        ; same felt downtime. Moves with it.
     loginFallbackAfterMs:    50000,
+    loginWaitCeilingMs:      1800000,  ; 30 min. How long the pipeline may sit
+                                       ; waiting for a human to sign in to
+                                       ; Battle.net before it gives up and
+                                       ; releases the launch. Without a limit
+                                       ; here a stuck LOGIN_WAIT leaves F1 and
+                                       ; F2 answering "launch in progress"
+                                       ; forever -- see LaunchStateMachine_Tick.
 
     ; ── Battle.net launch hiding ─────────────────────────────────────────────
     bnetAggressiveHide:      true,     ; true = maximum-aggression hiding of
@@ -743,6 +776,15 @@ global CFG := {
                                        ; A new launch re-arms the burst, so this
                                        ; only ever applies to a settled session.
                                        ; Set equal to fsCoastMs to disable.
+    fsNudgeThrottleMs:       250,      ; minimum gap between two event nudges. Was
+                                       ; effectively 10ms, which permitted a
+                                       ; hundred a second -- a de-duplicator, not
+                                       ; a throttle.
+    fsNudgeCeilingMs:        10000,    ; the longest a continuous run of nudges may
+                                       ; keep the sweep elevated. Without this a
+                                       ; steady trickle of Overwolf window
+                                       ; creations held it up forever, which is
+                                       ; exactly what happened during a match.
     fsEventBurstMs:          3000,     ; how long a burst triggered by a single
                                        ; new window lasts. This is what makes
                                        ; fsSettledMs safe: the event hook sees a
@@ -896,6 +938,13 @@ global CFG := {
                                        ; visible still use the settled 400ms
                                        ; movers. Set false to fall back to
                                        ; settled‑mover‑only placement.
+    hsGuardFastMs:           50,       ; HS placement guard, while Unity may still
+                                       ; snap the window to the primary monitor.
+    hsGuardIdleMs:           1000,     ; ...and afterwards. This is a drift watchdog
+                                       ; for something that essentially never
+                                       ; happens; it ran at 50ms for the whole
+                                       ; session and was the most expensive thing
+                                       ; the script did during a match.
     monitorLockPollMs:       1000,     ; cadence of the steady‑state monitor‑lock
                                        ; watchdog. 1s is plenty — it only nudges a
                                        ; window that has drifted onto the WRONG
@@ -1119,16 +1168,17 @@ _WriteDefaultConfig(path) {
     txt .= ";   they stay wherever you put them, which is usually a second screen.`r`n"
     txt .= "MonitorLock=1`r`n"
     txt .= "`r`n"
-    txt .= "; HotkeyAudio -- default 0 (off)`r`n"
+    txt .= "; HotkeyAudio -- default 1 (on)`r`n"
     txt .= ";`r`n"
     txt .= ";   1 = play a short, deep guitar note when a hotkey fires, so you know a`r`n"
     txt .= ";       press registered without looking away from the game. All keys now`r`n"
-    txt .= ";       sound the same unless you customise frequencies below.`r`n"
+    txt .= ";       sound the same (the F2 note) unless you customise frequencies below.`r`n"
     txt .= ";   0 = silent.`r`n"
     txt .= ";`r`n"
-    txt .= ";   The notes are generated on first use and cached, so enabling this adds`r`n"
-    txt .= ";   about a second to one start-up and nothing afterwards.`r`n"
-    txt .= "HotkeyAudio=0`r`n"
+    txt .= ";   The notes are generated on first use and cached, so this costs about`r`n"
+    txt .= ";   a second on one start-up and nothing afterwards. Set 0 if you would`r`n"
+    txt .= ";   rather it were silent.`r`n"
+    txt .= "HotkeyAudio=1`r`n"
     txt .= "`r`n"
     txt .= "; HotkeyAudioVolume -- 0 to 100, default 25`r`n"
     txt .= ";   Ignored while HotkeyAudio=0.`r`n"
@@ -1212,7 +1262,7 @@ LoadUserConfig() {
             return
 
         CFG.lockWindowsToChosenMonitor := (_CfgInt(path, "MonitorLock", 1, 0, 1) = 1)
-        CFG.hotkeyAudio                := (_CfgInt(path, "HotkeyAudio",  0, 0, 1) = 1)
+        CFG.hotkeyAudio                := (_CfgInt(path, "HotkeyAudio",  1, 0, 1) = 1)
         CFG.hotkeyAudioVolume          :=  _CfgInt(path, "HotkeyAudioVolume", 25, 0, 100)
         ; custom sound file
         try {
@@ -1298,6 +1348,10 @@ global InputShield := {
     active:  false,
     endTime: 0,
     mode:    "",   ; "F1" — for diagnostics only
+    pid:     0,    ; Hearthstone's PID, captured when the shield is armed.
+                   ; Stamped here rather than looked up per click: the shield's
+                   ; #HotIf runs inside the input hook, and ProcessExist walks
+                   ; the whole system process table. See _MouseIsOverHSProcess.
 }
 
 ; Resolved path/ID cache — populated lazily, cleared on HS restart.
@@ -1593,7 +1647,7 @@ GetChosenMonitorBounds(&l, &t, &w, &h) {
 ; ══════════════════════════════════════════════════════════════════════════════
 ;  HOTKEY TONES — a deep guitar note per key
 ; ══════════════════════════════════════════════════════════════════════════════
-; Off by default; switched on with HotkeyAudio=1 in HSBG Config.ini.
+; On by default; silenced with HotkeyAudio=0 in HSBG Config.ini.
 ;
 ; WHY THESE ARE SYNTHESISED RATHER THAN BEEPED. SoundBeep drives the system beep
 ; with a square wave: it is thin, piercing, and at the low frequencies wanted
@@ -1997,7 +2051,11 @@ _FwGUID(str) {
 ; lookups and process checks live in exactly one place.
 ;
 
-GetHSPID() => ProcessExist("Hearthstone.exe")
+; Cached through _ProcExistCached: positives for half a second, negatives never.
+; This is called from several timers, and each uncached call was a full system
+; process-table snapshot taking the global process-list lock. "Hearthstone has
+; exited" is still detected immediately, because a negative is never cached.
+GetHSPID() => _ProcExistCached("Hearthstone.exe")
 
 ; Returns true if any real Hearthstone window exists (including hidden ones).
 HSWindowExists() {
@@ -2054,30 +2112,48 @@ GetHSRealWindows() {
 ;
 ; Two rules follow, and both are load-bearing:
 ;
-;   1. THE CHEAPEST TEST FIRST. _ipBlockOn is a plain boolean and is the real
-;      precondition: the shield exists to stop a stray click during an F1
-;      firewall block, so with no block in place there is nothing to shield.
-;      With this first, the expensive part below is unreachable except during
-;      the two seconds of an actual F1 press.
+;   1. THE CHEAPEST TESTS FIRST, and they are all plain reads. Two booleans and
+;      one integer comparison decide the common case, so the part that touches
+;      the OS is unreachable except during an actual F1 press.
 ;
-;   2. NO WINDOW ENUMERATION. MouseIsOverRealHSWindow used to call
-;      GetHSRealWindows, which enumerates every Hearthstone window and queries
-;      the class and rectangle of each -- inside the hook, per click. It is
-;      replaced by a single process-ID comparison on the window under the
-;      cursor, which is one call and answers the same question.
+;      This used to lead with _ipBlockOn -- "is a firewall rule in place". That
+;      was wrong, and it is the reason clicks landed too early: the rule is
+;      deleted the instant the hold ends, but the game has not reconnected yet.
+;      It still has to notice the drop, reconnect and replay to the result, and
+;      during that second the shield had already switched itself off. The
+;      precondition is the SHIELD's own lifetime, not the firewall's.
+;
+;   2. THE EXPIRY IS CHECKED HERE, not only on the 50 ms tick. A shield that
+;      latched on would make the mouse useless inside the game, so the gate
+;      refuses on its own once endTime has passed. Even if the tick were
+;      killed outright, clicks come back on schedule.
+;
+;   3. NO WINDOW ENUMERATION AND NO PROCESS ENUMERATION. This runs on every
+;      click. An earlier version called GetHSRealWindows (enumerate every HS
+;      window, read each class and rect); the version after it still called
+;      ProcessExist, which walks the entire system process table. Both are far
+;      too expensive for the hook -- an expression that misses the hook's
+;      deadline is abandoned and its previous result reused, which is the
+;      "clicks stop registering until I move the cursor to another monitor and
+;      back" symptom. The PID is now stamped once when the shield is armed, so
+;      the whole test is one WindowFromPoint and one GetWindowThreadProcessId.
 HS_MouseShieldActive() {
-    global InputShield, _ipBlockOn
-    if !(_ipBlockOn && InputShield.active && InputShield.mode = "F1")
+    global InputShield
+    if !(InputShield.active && InputShield.mode = "F1")
+        return false
+    if (A_TickCount >= InputShield.endTime)
         return false
     return _MouseIsOverHSProcess()
 }
 
 ; Is the cursor over a window belonging to Hearthstone? One WindowFromPoint plus
-; one GetWindowThreadProcessId -- no enumeration, no title reads, no
+; one GetWindowThreadProcessId, compared against the PID captured when the
+; shield was armed -- no enumeration, no process table walk, no title reads, no
 ; DetectHiddenWindows toggling. Safe to run inside the input hook.
 _MouseIsOverHSProcess() {
+    global InputShield
     try {
-        pid := GetHSPID()
+        pid := InputShield.pid
         if !pid
             return false
         MouseGetPos(, , &hwnd)
@@ -2766,7 +2842,7 @@ _FastGameServerIPs(hsPID) {
     static MIB_TCP_STATE_ESTAB   := 5
     static ROW_BYTES             := 24    ; 6 x DWORD, see below
 
-    out := {ips: "", cnt: 0, detail: ""}
+    out := {ips: "", cnt: 0, svcCnt: 0, v6Cnt: 0, detail: ""}
     if !hsPID
         return out
 
@@ -2822,7 +2898,13 @@ _FastGameServerIPs(hsPID) {
             if !InStr("," . gameCsv . ",", "," . rp . ",")
                 continue
         } else if InStr(svcCsv, "," . rp . ",") {
-            continue                          ; services/auth port: never ours
+            ; A services/auth connection. Never a block candidate here -- but
+            ; COUNT it. The caller needs to know how many exist: the smart-mode
+            ; services fallback is only meaningful when there are at least two
+            ; (one auth, one game), and without this the fast path reported zero
+            ; and silently disabled that fallback. See the caller in Hotkey_F1.
+            out.svcCnt++
+            continue
         }
 
         ra := NumGet(buf, off + 12, "UInt")
@@ -2847,7 +2929,89 @@ _FastGameServerIPs(hsPID) {
             out.ips .= (out.ips = "" ? "" : ",") . ip
         }
     }
+
+    ; ── DOES THIS PROCESS HAVE IPv6 CONNECTIONS WE CANNOT SEE? ───────────────
+    ; Everything above is AF_INET. If Hearthstone is talking to its game server
+    ; over IPv6, the table read here is blind to it -- and the failure is the
+    ; worst kind: an IPv4 keep-alive to a CDN is found, the caller takes it as
+    ; the answer, and F1 blocks an address the match is not using. No skip, no
+    ; error, press it again.
+    ;
+    ; So count what we cannot interpret. Any public established IPv6 connection
+    ; owned by this process means this reading is incomplete, and the caller
+    ; must fall through to the PowerShell enumeration, which handles both
+    ; families. Costs one more table read of a normally tiny table.
+    out.v6Cnt := _CountPublicV6Established(hsPID)
     return out
+}
+
+; Public, established IPv6 connections owned by a process. Count only -- the
+; addresses are not decoded, because the only decision they inform is "is the
+; fast path allowed to answer".
+_CountPublicV6Established(hsPID) {
+    static AF_INET6                := 23
+    static TCP_TABLE_OWNER_PID_ALL := 5
+    static MIB_TCP_STATE_ESTAB     := 5
+    static ROW6_BYTES              := 56   ; see the layout note below
+
+    n6 := 0
+    if !hsPID
+        return 0
+    size := 0
+    buf  := 0
+    Loop 4 {
+        rc := DllCall("iphlpapi\GetExtendedTcpTable", "Ptr", 0, "UInt*", &size
+            , "Int", 0, "UInt", AF_INET6, "Int", TCP_TABLE_OWNER_PID_ALL, "UInt", 0, "UInt")
+        if (rc != 122 && rc != 0)
+            return 0
+        if (size <= 0)
+            return 0
+        buf := Buffer(size, 0)
+        rc := DllCall("iphlpapi\GetExtendedTcpTable", "Ptr", buf, "UInt*", &size
+            , "Int", 0, "UInt", AF_INET6, "Int", TCP_TABLE_OWNER_PID_ALL, "UInt", 0, "UInt")
+        if (rc = 0)
+            break
+        if (rc != 122)
+            return 0
+        buf := 0
+    }
+    if !IsObject(buf)
+        return 0
+
+    ; MIB_TCP6TABLE_OWNER_PID: DWORD dwNumEntries, then rows of
+    ; MIB_TCP6ROW_OWNER_PID { UCHAR ucLocalAddr[16]; DWORD dwLocalScopeId;
+    ; DWORD dwLocalPort; UCHAR ucRemoteAddr[16]; DWORD dwRemoteScopeId;
+    ; DWORD dwRemotePort; DWORD dwState; DWORD dwOwningPid } = 56 bytes.
+    n := NumGet(buf, 0, "UInt")
+    if (n <= 0 || (4 + n * ROW6_BYTES) > size)
+        return 0
+
+    Loop n {
+        off := 4 + (A_Index - 1) * ROW6_BYTES
+        if (NumGet(buf, off + 52, "UInt") != hsPID)      ; dwOwningPid
+            continue
+        if (NumGet(buf, off + 48, "UInt") != MIB_TCP_STATE_ESTAB)
+            continue
+
+        ; Remote address starts at +24. Skip link-local (fe80::/10) and
+        ; loopback (::1) -- neither is a game server, same rule the PowerShell
+        ; enumeration applies.
+        rb0 := NumGet(buf, off + 24, "UChar")
+        rb1 := NumGet(buf, off + 25, "UChar")
+        if (rb0 = 0xFE && (rb1 & 0xC0) = 0x80)
+            continue
+        allZero := true
+        Loop 15 {
+            if (NumGet(buf, off + 24 + A_Index - 1, "UChar") != 0) {
+                allZero := false
+                break
+            }
+        }
+        if (allZero && NumGet(buf, off + 39, "UChar") = 1)
+            continue                                      ; ::1
+        n6++
+    }
+    return n6
 }
 
 ; Find the live game‑server connection(s). Enumeration ONLY — nothing is reset
@@ -3140,7 +3304,30 @@ StartHSInputShield(mode, durationMs) {
     InputShield.active  := true
     InputShield.mode    := mode
     InputShield.endTime := A_TickCount + durationMs
+    ; Stamped once, here. The #HotIf that gates the shield runs inside the input
+    ; hook on every click, and resolving Hearthstone's PID there meant walking
+    ; the system process table per click.
+    InputShield.pid     := GetHSPID()
     SetTimer(HSInputShield_Tick, 50)
+}
+
+; Re-aim the shield's expiry at a fixed point from now.
+;
+; Used to hand the shield a short, explicit life after the firewall block is
+; lifted, instead of either dropping it immediately (clicks land during the
+; reconnect) or leaving it on its original ceiling (the game stays dead for
+; seconds after the network is already back). Both of those have been reported;
+; this is the knob between them, and it is CFG.f1PostReleaseShieldMs.
+_ExtendHSInputShield(ms) {
+    global InputShield
+    if (ms <= 0) {
+        StopHSInputShield()
+        return
+    }
+    if !InputShield.active
+        return
+    InputShield.endTime := A_TickCount + ms
+    SetTimer(HSInputShield_Tick, 50)   ; idempotent; re-arm in case it expired
 }
 
 StopHSInputShield() {
@@ -3506,7 +3693,10 @@ RevealHSAfterLaunch() {
     ; branch is a no-op while HS sits on the right monitor, so there is
     ; nothing to fight -- and a late Unity snap-back to the primary now gets
     ; corrected within ~150ms instead of sitting there for up to a second.
-    SetTimer(() => StartHSPlacementGuard(60000), -150)
+    ; 15s of fast placement, then the guard drops to its watchdog cadence by
+    ; itself. The old 60000 was the guard's whole lifetime; it is now just the
+    ; length of the fast phase, and Unity has always settled long before this.
+    SetTimer(() => StartHSPlacementGuard(15000), -150)
 
     SetHSGpuPreferenceHigh()
     PauseWSearch()
@@ -5043,22 +5233,33 @@ CloseFirestoneNotificationPopups() {
 
     matched := Map()
     try {
-        ; Guard 2 precondition: locate a titled Firestone - Main first.
+        ; ONE ENUMERATION, NOT TWO.
+        ;
+        ; This walked both Overwolf executables to work out whether a titled
+        ; Firestone - Main exists, then walked both again to act. Each walk is a
+        ; full EnumWindows over every top-level window on the desktop with a
+        ; process-name lookup per window, so the pass that only sets a boolean
+        ; cost exactly as much as the pass that does the work. Collect once,
+        ; decide, then act on what was collected.
         fsMainPresent := false
+        owWnds := []
         for exe in ["Overwolf.exe", "OverwolfBrowser.exe"] {
             for h in WinGetList("ahk_exe " . exe) {
                 try {
-                    if IsFirestoneMainTitle(WinGetTitle("ahk_id " . h))
+                    t := WinGetTitle("ahk_id " . h)
+                    owWnds.Push({hwnd: h, title: t})
+                    if IsFirestoneMainTitle(t)
                         fsMainPresent := true
                 } catch {
                 }
             }
         }
 
-        for exe in ["Overwolf.exe", "OverwolfBrowser.exe"] {
-            for h in WinGetList("ahk_exe " . exe) {
+        {
+            for ow in owWnds {
                 try {
-                    title := WinGetTitle("ahk_id " . h)
+                    h     := ow.hwnd
+                    title := ow.title
                     if !IsFirestoneNotificationPopup(h, title)
                         continue
                     if !fsMainPresent                       ; guard 2
@@ -5320,6 +5521,10 @@ global _fsBurstHasRef := false
 ; nudge and a long launch burst coexist without the short one cutting the long
 ; one off -- see _FSEventNudge.
 global _fsBurstUntil := 0
+; End of the current NUDGE episode (see _FSEventNudge). Separate from
+; _fsBurstUntil: a launch burst and an event nudge have different rates,
+; different lifetimes, and only one of them takes the high-resolution timer.
+global _fsNudgeUntil := 0
 
 StartFSBurst() {
     global State, _fsBurstHasRef, CFG, _fsBurstUntil
@@ -5363,29 +5568,86 @@ StartFSBurst() {
 ; nudge is three, and a window created during a launch must not cut the launch
 ; burst down to its own length. _fsBurstUntil is the comparison that prevents
 ; that.
+; ── THIS FUNCTION WAS THE PERFORMANCE BUG. WHAT FOLLOWS IS WHY. ──────────────
+;
+; The first version pinned the sweep at fsBurstMs (10 ms) for three seconds and
+; took a timeBeginPeriod(1) reference to do it, re-arming BOTH on every Overwolf
+; window creation, with a throttle of one nudge per 10 ms. Three compounding
+; mistakes:
+;
+;   * SetTimer(fn, -3000) on an already-pending one-shot RESETS the countdown.
+;     Every nudge pushed the only release path three seconds further out.
+;   * The "a longer burst already covers this" test compares against a horizon
+;     that is always three seconds in the future, so it can never be true for
+;     one nudge following another. It stops a nudge shortening a LAUNCH burst;
+;     it does nothing to stop nudges accumulating.
+;   * Nothing anywhere bounded the total.
+;
+; So one Overwolf window created every three seconds -- which a Chromium app
+; hosting a live overlay clears easily during a match -- was enough to hold the
+; sweep at 100 Hz and the system timer at 1 ms resolution for the entire
+; session. Measured against what the sweep actually does, that is three full
+; desktop window enumerations per tick, each resolving the owning process name
+; for every top-level window on the machine: on the order of 75,000 OpenProcess
+; calls a second, saturating a core, next to the game. That is the reported
+; slowdown.
+;
+; Three changes, and the first is the important one:
+;
+;   1. THE NUDGE NO LONGER GOES TO BURST SPEED. It goes to the COAST rate. The
+;      burst rate exists to win a race against a window's first paint at birth,
+;      and the CREATE hook already conceals the window before this is even
+;      called -- the sweep is the backstop, and a backstop does not need 100 Hz.
+;      Coast is five times cheaper and still five times faster than settled.
+;   2. NO HIGH-RESOLUTION TIMER. At a 50 ms cadence the default platform
+;      resolution is entirely adequate, so this no longer touches
+;      timeBeginPeriod at all -- which is what was raising the system-wide
+;      interrupt rate and keeping the CPU out of its deeper idle states while
+;      the user was playing.
+;   3. A CEILING, AND A REAL THROTTLE. Nudges may extend the elevated cadence
+;      for at most fsNudgeCeilingMs from the first one of an episode, and at
+;      most one nudge per fsNudgeThrottleMs is considered at all.
+;
+; It still never shortens a launch burst: that path holds _fsBurstHasRef, and
+; this returns immediately when it is set.
 _FSEventNudge() {
-    global State, _fsBurstHasRef, _fsBurstUntil, CFG
-    static lastNudge := 0
+    global State, _fsBurstHasRef, _fsNudgeUntil, CFG
+    static lastNudge := 0, epochStart := 0
     if (!State.fsMainLocked || CFG.fsEventBurstMs <= 0)
         return
-    ; Chromium creates windows in clusters -- a visible frame plus several
-    ; hidden IPC surfaces, all within a few milliseconds. The first of those
-    ; has already set the sweep to burst speed and the rest would only re-arm
-    ; the same timers, so anything arriving inside one sweep interval is
-    ; redundant. This keeps a burst of creations from costing a burst of work.
-    if (lastNudge && A_TickCount - lastNudge < CFG.fsBurstMs)
+    ; A launch burst owns the cadence outright and is already faster than this.
+    if _fsBurstHasRef
         return
-    lastNudge := A_TickCount
-    burstUntil := A_TickCount + CFG.fsEventBurstMs
-    if (_fsBurstHasRef && _fsBurstUntil >= burstUntil)
-        return                      ; a longer burst already covers this
-    if !_fsBurstHasRef {
-        _AcquireHighResTimer()
-        _fsBurstHasRef := true
-    }
-    _fsBurstUntil := burstUntil
-    SetTimer(FSMainMonitor, CFG.fsBurstMs)
-    SetTimer(_FSBurstDecay, -CFG.fsEventBurstMs)
+    ; Chromium creates windows in clusters -- a visible frame plus several
+    ; hidden IPC surfaces within a few milliseconds of each other. One nudge
+    ; covers the whole cluster.
+    if (lastNudge && A_TickCount - lastNudge < CFG.fsNudgeThrottleMs)
+        return
+
+    ; An episode is a run of nudges with no gap long enough to let the elevated
+    ; cadence decay. Anchored on the first nudge after a quiet period, and
+    ; capped, so a steady trickle of window creations can no longer hold the
+    ; sweep up indefinitely.
+    if (!epochStart || A_TickCount > _fsNudgeUntil)
+        epochStart := A_TickCount
+    else if (A_TickCount - epochStart > CFG.fsNudgeCeilingMs)
+        return
+
+    lastNudge     := A_TickCount
+    _fsNudgeUntil := A_TickCount + CFG.fsEventBurstMs
+    SetTimer(FSMainMonitor, CFG.fsCoastMs)
+    SetTimer(_FSNudgeDecay, -CFG.fsEventBurstMs)
+}
+
+; End a nudge episode: hand the cadence back to FSMainMonitor's own decision.
+; Deliberately does NOT touch _fsBurstHasRef or the high-resolution timer --
+; a nudge never took either.
+_FSNudgeDecay(*) {
+    global State, _fsNudgeUntil, _fsBurstHasRef
+    _fsNudgeUntil := 0
+    if (!State.fsMainLocked || _fsBurstHasRef)
+        return
+    SetTimer(FSMainMonitor, _FSCoastMs())
 }
 
 _FSBurstDecay(*) {
@@ -5427,6 +5689,8 @@ StopFSBurst() {
 ; Suppression tick. Cloaks FS‑Main / FS‑Loading so DWM refuses to render them.
 SuppressFirestoneMainTick() {
     global State, CFG, _fsBirthHidden, _fsHiddenByUs, _fsAlphaApplied
+    global _cloakState, _fsMainCandidate, _fsExemptReleased
+    global _fsParked, _fsTabRemoved, _fsOverlayRescued
 
     ; ---- birth-hide timeout sweep (safety net) ----
     ; Guarantees no window stays hidden by accident: anything birth-hidden
@@ -5519,8 +5783,41 @@ SuppressFirestoneMainTick() {
                         ; PARK: an overlay parked off the virtual desktop by
                         ; the birth suppression is just as unrecoverable as one
                         ; stranded transparent, so this sweep un-parks it too.
-                        _RemoveFSAlphaShield(h)
-                        _FSReleaseSurface(h)      ; unpark, then uncloak
+                        ; ── ONE RESCUE PASS, THEN GUARDED ────────────────
+                        ; This pair was unconditional on every tick, against
+                        ; the ONE window that is composited on top of the game:
+                        ; _RemoveFSAlphaShield plus _FSReleaseSurface is four
+                        ; DwmSetWindowAttribute writes, each an LPC round-trip
+                        ; to the same dwm.exe that is compositing Hearthstone.
+                        ; At the settled rate that is sixteen a second, forever,
+                        ; and every one of them asks the compositor to change
+                        ; something about the overlay for no reason.
+                        ;
+                        ; OverlayTopmostTick was rewritten specifically to stop
+                        ; doing this -- "pure churn against the one window that
+                        ; must stay rock steady while the user has comps pinned
+                        ; to it" -- and then this sweep kept doing it anyway,
+                        ; sixteen times more often.
+                        ;
+                        ; The unconditional form exists for a real case: an
+                        ; overlay stranded transparent or parked by a PREVIOUS
+                        ; instance of this script has no ledger entry, so a
+                        ; guarded release would never rescue it. That is a
+                        ; once-per-window problem, not a once-per-tick one. So
+                        ; it runs unconditionally exactly once per window, and
+                        ; every tick after that only when something is actually
+                        ; holding the window -- the same guard the topmost
+                        ; enforcer already uses.
+                        if !_fsOverlayRescued.Has(h) {
+                            _fsOverlayRescued[h] := A_TickCount
+                            _RemoveFSAlphaShield(h)
+                            _FSReleaseSurface(h)      ; unpark, then uncloak
+                        } else if (_fsAlphaApplied.Has(h) || _fsParked.Has(h)
+                                || _fsTabRemoved.Has(h) || _cloakState.Has(h)
+                                || IsWindowCloakedDWM(h)) {
+                            _RemoveFSAlphaShield(h)
+                            _FSReleaseSurface(h)
+                        }
                         if !DllCall("user32\IsWindowVisible", "Ptr", h) {
                             ; _MapDrop, not .Delete: an absent key throws in
                             ; v2, and a throw here would skip the ShowWindow
@@ -5548,8 +5845,57 @@ SuppressFirestoneMainTick() {
                     ; is exactly the black-rectangle-with-a-titlebar in the
                     ; screenshot. Cloak AND take it off the screen, ledgered
                     ; so F3 can bring it back.
-                    if IsHelperWindow(h)
+                    ; ── HELPER-SHAPED: NOT OURS TO MANAGE ────────────────────
+                    ; Overwolf builds its internal surfaces owned or
+                    ; WS_EX_TOOLWINDOW, so this branch is "we cannot name it and
+                    ; it is not a top-level app window" -- leave it alone.
+                    if IsHelperWindow(h) {
+                        ; ── BUT FIRST: UNDO ANYTHING WE DID TO IT ────────────
+                        ;
+                        ; THIS IS THE LEAK, AND IT IS A BUG IN THIS SCRIPT ON
+                        ; ITS OWN TERMS, whatever the window turns out to be.
+                        ;
+                        ; The birth cloak in the CREATE hook deliberately has NO
+                        ; helper gate -- it fires on every newborn Overwolf
+                        ; window, before any of them has a title to judge. This
+                        ; branch is where the script later decides such a window
+                        ; is not its business. It then `continue`d, leaving the
+                        ; window cloaked by us, forever: the release paths above
+                        ; only ever fire for the one allow-listed title, so
+                        ; nothing else in the sweep could undo it. Invisible
+                        ; until F3 or exit.
+                        ;
+                        ; "Every concealment has a matching cleanup" is a stated
+                        ; invariant of this script and it did not hold here. A
+                        ; window we conceal and then disown must be released.
+                        ;
+                        ; Fenced to windows WE are holding (_cloakState), with a
+                        ; settled name, and never touching anything still inside
+                        ; the Firestone-Main formation lifecycle or the two
+                        ; surfaces that are supposed to stay concealed:
+                        ;   - a bare "Firestone" is Main still forming, or the
+                        ;     notification popup; both are owned elsewhere,
+                        ;   - the loading splash has its own suppressor,
+                        ;   - _fsMainCandidate is the formation ledger.
+                        ; Once per window, so a window Overwolf re-cloaks itself
+                        ; is never fought at sweep rate.
+                        if (_cloakState.Has(h) && !_fsExemptReleased.Has(h)
+                         && title != "" && title != "Firestone"
+                         && !_fsMainCandidate.Has(h)
+                         && !IsFirestoneMainTitle(title)
+                         && title != "Firestone - Loading"
+                         && !IsLikelyFirestoneLoadingPopupHwnd(h)
+                         && !IsFirestoneNotificationPopup(h, title)) {
+                            _fsExemptReleased[h] := A_TickCount
+                            _FSLog("FS-EXEMPT releasing a window we cloaked at"
+                                 . " birth and then disowned hwnd=" . h
+                                 . " title=`"" . title . "`""
+                                 . " -- helper-shaped and unrecognised, so it is"
+                                 . " not ours to conceal")
+                            _FSReleaseSurface(h)
+                        }
                         continue
+                    }
                     ; UNTITLED AND UNRECOGNISED SURFACES. Firestone - Main is
                     ; born untitled, so this branch used to be hide number
                     ; three of five on Main's own HWND -- an unconditional
@@ -5970,14 +6316,26 @@ global _hsGuardActive := false
 global _hsGuardUntil  := 0
 global _hsRevealed    := Map()   ; hwnd -> true once placed + uncloaked
 
-StartHSPlacementGuard(durationMs := 60000) {
-    global _hsGuardActive, _hsGuardUntil
+; TWO CADENCES, AND THE FAST ONE IS SHORT-LIVED.
+;
+; The whole reason this runs quickly is Unity's snap-to-primary: for a few
+; seconds after the game's window appears it can place itself on the wrong
+; monitor, and 50 ms means the correction lands before the user really sees it.
+; That window closes. Afterwards the guard is a drift watchdog for something
+; that essentially never happens, and it was staying at 50 ms for the entire
+; session -- twenty process-table snapshots and twenty full desktop window
+; enumerations per second, forever, next to the game. It was the single most
+; expensive thing this script did while the user was playing.
+;
+; durationMs now means what it always looked like it meant: how long the fast
+; phase lasts. After it, the same checks continue at hsGuardIdleMs. Nothing is
+; given up -- a window that drifts is still corrected, just on the cadence of a
+; watchdog instead of a race.
+StartHSPlacementGuard(durationMs := 15000) {
+    global _hsGuardActive, _hsGuardUntil, CFG
     _hsGuardActive := true
     _hsGuardUntil  := A_TickCount + durationMs
-    SetTimer(HSPlacementGuardTick, 50)    ; was 150: a faster tick means
-                                          ; Unity's snap-to-primary is
-                                          ; corrected sooner, so HS is visibly
-                                          ; off-monitor for less time
+    SetTimer(HSPlacementGuardTick, CFG.hsGuardFastMs)
     HSPlacementGuardTick()
 }
 
@@ -5999,7 +6357,7 @@ StopHSPlacementGuard() {
 }
 
 HSPlacementGuardTick() {
-    global _hsGuardActive, _hsRevealed, CFG, ChosenMonIdx
+    global _hsGuardActive, _hsRevealed, CFG, ChosenMonIdx, _hsGuardUntil
 
     if !_hsGuardActive {
         SetTimer(HSPlacementGuardTick, 0)
@@ -6008,10 +6366,29 @@ HSPlacementGuardTick() {
     ; Permanent while HS exists: the guard is HS's SOLE monitor-keeper now
     ; (the lock no longer touches HS), so it must not time out and leave HS
     ; unowned. It self-stops only when Hearthstone is gone.
-    if !ProcessExist("Hearthstone.exe") {
+    ;
+    ; Cached: this ran an uncached ProcessExist -- a full system process-table
+    ; snapshot, taking the global process-list lock -- twenty times a second for
+    ; the whole session. The cache never caches a NEGATIVE, so "Hearthstone has
+    ; exited" is still noticed on the very next tick.
+    if !_ProcExistCached("Hearthstone.exe") {
         StopHSPlacementGuard()
         return
     }
+
+    ; Drop out of the fast phase once Unity has had its chance to misplace the
+    ; window. Re-armed at full speed by the next RevealHSAfterLaunch.
+    if (_hsGuardUntil && A_TickCount > _hsGuardUntil) {
+        _hsGuardUntil := 0
+        SetTimer(HSPlacementGuardTick, CFG.hsGuardIdleMs)
+    }
+
+    ; Nothing to correct without a monitor to correct to. On a single monitor,
+    ; or with the lock off, every check below is arithmetic that can only reach
+    ; the same answer -- _PlaceHSOnChosenMonitor returns false at its first two
+    ; lines for exactly these cases. Skipping here saves the enumeration too.
+    if !(CFG.lockWindowsToChosenMonitor && ChosenMonIdx)
+        return
 
     prev := A_DetectHiddenWindows
     DetectHiddenWindows true
@@ -6108,7 +6485,13 @@ FSMainMonitor() {
 ; Every read here is a plain variable -- this is called on the sweep itself, so
 ; it must not cost more than the sweep saves.
 _FSCoastMs() {
-    global CFG, _fsMainEverOpened, State, Launch
+    global CFG, _fsMainEverOpened, State, Launch, _fsNudgeUntil
+    ; A nudge episode is in progress: hold the faster cadence rather than let
+    ; FSMainMonitor's own "nothing is happening" reasoning immediately undo it.
+    ; Without this the nudge and the self-retargeting fight each other every
+    ; tick and the nudge loses.
+    if (_fsNudgeUntil && A_TickCount < _fsNudgeUntil)
+        return CFG.fsCoastMs
     if (CFG.fsSettledMs > CFG.fsCoastMs
      && _fsMainEverOpened
      && !State.f2Active
@@ -6227,6 +6610,17 @@ global _fsParked         := Map()   ; hwnd -> true: currently parked off-screen
 global _fsParkedRect     := Map()   ; hwnd -> {x,y,w,h} where it was before
 global _fsParkCycles     := Map()   ; hwnd -> park/unpark cycles performed
 global _fsProbeGaveUp    := Map()   ; hwnd -> probing stopped (stays COLD)
+; Windows the sweep cloaked at birth and later disowned, released once each.
+; Once-per-window so that a window Overwolf chooses to keep cloaked itself is
+; never fought at sweep rate -- we undo our own cloak exactly one time and then
+; leave the window entirely alone.
+global _fsExemptReleased := Map()   ; hwnd -> tick when we let go of it
+
+; Overlay windows that have had their one unconditional rescue pass. After
+; that the sweep only touches them when a ledger says it is holding them --
+; see the IsFSVisibleTitle branch in SuppressFirestoneMainTick.
+global _fsOverlayRescued := Map()
+
 global _fsMainCandidate  := Map()   ; hwnd -> ever carried a Loading/Main title.
                                     ; Identity guard for the popup closer: an
                                     ; HWND that has ever been Loading or Main
@@ -7280,14 +7674,30 @@ _PlaceBlizzWindowNow(hwnd) {
 ; DWMWA_TRANSITIONS_FORCEDISABLED (3): while TRUE, DWM draws NO minimize /
 ; restore / open transition animation for the window. This removes the black‑
 ; rectangle flicker during restore↔minimize fights.
+; Arbitrated, like CloakWindow and UncloakWindow beside it -- and for the same
+; reason. Every one of these is an LPC round-trip to dwm.exe, the process that
+; is also compositing the game, and this pair had no idempotency guard at all:
+; the suppression path called it unconditionally for every concealed Firestone
+; window on every sweep tick, to set a value that was already set.
+global _fsTransitionsOff := Map()   ; hwnd -> true while WE have transitions off
+
 _DisableDWMTransitions(hwnd) {
+    global _fsTransitionsOff
     static DWMWA_TRANSITIONS_FORCEDISABLED := 3
+    if _fsTransitionsOff.Has(hwnd)
+        return
+    _fsTransitionsOff[hwnd] := true
     v := 1
     try DllCall("dwmapi\DwmSetWindowAttribute", "Ptr", hwnd, "UInt", DWMWA_TRANSITIONS_FORCEDISABLED, "Int*", v, "UInt", 4)
 }
 
 _EnableDWMTransitions(hwnd) {
+    global _fsTransitionsOff
     static DWMWA_TRANSITIONS_FORCEDISABLED := 3
+    ; Unlike the disable, this is NOT skipped when the ledger is empty: it is a
+    ; repair path as well as an undo, and a window left with transitions
+    ; disabled by a previous instance has no ledger entry here.
+    _MapDrop(_fsTransitionsOff, hwnd)
     v := 0
     try DllCall("dwmapi\DwmSetWindowAttribute", "Ptr", hwnd, "UInt", DWMWA_TRANSITIONS_FORCEDISABLED, "Int*", v, "UInt", 4)
 }
@@ -7603,7 +8013,21 @@ global _bnetPostMinCount := Map()   ; hwnd -> corrective minimizes performed
 ; Infrastructure windows (Qt tray helper, tool windows) must NEVER be managed.
 IsHelperWindow(hwnd) {
     try {
-        if (DllCall("user32\GetAncestor", "Ptr", hwnd, "UInt", 2, "Ptr") != hwnd)
+        ; GA_ROOTOWNER = 3, NOT GA_ROOT = 2.
+        ;
+        ; This test is documented in two places as "exempt anything OWNED by
+        ; another window", and with GA_ROOT it never fired once: GA_ROOT walks
+        ; the PARENT chain, and WinGetList only ever returns top-level windows,
+        ; for which GetAncestor(h, GA_ROOT) is always h. GA_ROOTOWNER is the one
+        ; that follows the OWNER chain and actually answers the question.
+        ;
+        ; The effect of the fix is uniformly to be GENTLER with owned Overwolf
+        ; windows -- cloak-only instead of the cold park in _FSSuppressSurface,
+        ; skipped instead of suppressed by the settled sweep, not moved by the
+        ; monitor lock, not re-asserted at EV_SHOW. That is what the surrounding
+        ; policy was written assuming, and an owned overlay panel is precisely
+        ; the kind of window it was meant to keep hands off.
+        if (DllCall("user32\GetAncestor", "Ptr", hwnd, "UInt", 3, "Ptr") != hwnd)
             return true
         ex := 0
         try ex := WinGetExStyle("ahk_id " . hwnd)
@@ -7904,8 +8328,18 @@ RevealBNetForRender() {
                 ; 10ms -> guarantee here).
                 if (_bnetHiddenByUs.Has(hwnd) || _bnetHideDone.Has(hwnd)
                  || !DllCall("user32\IsWindowVisible", "Ptr", hwnd)) {
-                    _bnetHiddenByUs.Delete(hwnd)
-                    _bnetHideDone.Delete(hwnd)
+                    ; _MapDrop, NOT .Delete. The third disjunct above enters
+                    ; this block for a window that is merely INVISIBLE and in
+                    ; neither ledger -- Battle.net closed to the tray, started
+                    ; minimized, or left hidden by a killed instance -- and
+                    ; Map.Delete on an absent key throws in v2. The enclosing
+                    ; try has no catch, so the throw silently abandoned the
+                    ; rest of this window's body: no uncloak, no ShowWindow, no
+                    ; placement, and _bnetLauncherHwnd never assigned. This is
+                    ; the reveal's own "Layer 3 of 3 -- guarantee here", and it
+                    ; was dead in exactly the configuration it names.
+                    _MapDrop(_bnetHiddenByUs, hwnd)
+                    _MapDrop(_bnetHideDone, hwnd)
                     try UncloakWindow(hwnd)
                     if !DllCall("user32\IsWindowVisible", "Ptr", hwnd)
                         DllCall("ShowWindow", "Ptr", hwnd, "Int", 8)   ; SW_SHOWNA
@@ -9278,6 +9712,19 @@ _MoveBudgetReset(h) {
 global _placeCreateSeen := Map()   ; hwnd -> EVENT_OBJECT_CREATE TickCount
 global _placeFirstSeen  := Map()   ; hwnd -> first VISIBLE sighting TickCount
 
+; Runs on its own schedule as well as from the monitor lock.
+;
+; The lock was its ONLY caller, and the lock does not run at all when
+; MonitorLock=0 -- the setting single-monitor users are told to pick. With it
+; off, none of the thirty-odd hwnd ledgers below were ever pruned for the whole
+; session. Windows recycles window handles, so every one of them slowly fills
+; with entries belonging to windows that no longer exist, and each stale entry
+; is a wrong answer: a recycled handle inherits "we parked this", "we cloaked
+; this", or "this popup was already seen", and the code acts on it.
+_PruneLedgersTick() {
+    try _PrunePlacementMaps()
+}
+
 _PrunePlacementMaps() {
     global _placeCreateSeen, _placeFirstSeen, _bnetFirstMoved, _fsAlphaApplied
     global _fsDeferredPopupCloak, _moveBudget, _fsHiddenByUs, _fsShieldDown, _fsEverPainted, _cloakState, _bnetHideDone
@@ -9295,7 +9742,7 @@ _PrunePlacementMaps() {
     global _fsPaintState, _fsPaintProbeAt, _fsPaintHits, _fsColdSince
     global _fsParked, _fsParkedRect, _fsTabRemoved, _fsBirthReassert, _fsMainLogged
     global _fsParkCycles, _fsMainCandidate, _fsProbeGaveUp, _fsRevealDone
-    global _fsRevealSettled
+    global _fsRevealSettled, _fsExemptReleased, _fsOverlayRescued, _fsTransitionsOff
     ; The popup ledgers. Windows recycles HWNDs, so a stale entry here either
     ; skips a genuinely new popup (seen as already-killed) or instantly ages a
     ; brand-new window past the grace and closes a Main that is still forming.
@@ -9307,7 +9754,7 @@ _PrunePlacementMaps() {
             , _fsPaintState, _fsPaintProbeAt, _fsPaintHits, _fsColdSince
             , _fsParked, _fsParkedRect, _fsTabRemoved, _fsBirthReassert, _fsMainLogged
             , _fsParkCycles, _fsMainCandidate, _fsProbeGaveUp, _fsRevealDone
-            , _fsRevealSettled
+            , _fsRevealSettled, _fsExemptReleased, _fsOverlayRescued, _fsTransitionsOff
             , _fsPopupKilled, _fsPopupFirstSeen] {
         dead := []
         for h in m {
@@ -9655,6 +10102,33 @@ LaunchHudWatchdog() {
 LaunchStateMachine_Tick() {
     global Launch, Cache, State, CFG, _lateHSUntil, _bnetRevealedAt, _bnetPostMinDone, _bnetLoginAllowed, _bnetLaunchFiredAt, _smLastTick
     _smLastTick := A_TickCount
+
+    ; ── LOGIN_WAIT GETS ITS OWN CEILING ──────────────────────────────────────
+    ;
+    ; It is exempt from the launch ceiling below, and correctly so -- a human
+    ; typing a password should not be raced. But exempt from EVERY limit meant
+    ; the pipeline could sit in LOGIN_WAIT forever, and that state is not inert:
+    ; the tick keeps stamping _smLastTick, so _LaunchPipelineAlive() stays true,
+    ; so F1 answers "launch in progress" and F2 answers "already launching" on
+    ; every press for the rest of the session. Two of the four hotkeys dead,
+    ; with nothing able to recover them.
+    ;
+    ; It does not take a real login screen to get stuck there. The detector
+    ; matches the substrings "log in" / "sign in" in ANY Battle.net window title
+    ; including hidden ones, so a background CEF window that keeps such a title
+    ; after a successful login satisfies the exit test's negation forever.
+    ;
+    ; Thirty minutes is longer than any genuine sign-in and is the same budget
+    ; the README already promises for a large patch. Falling out of it aborts
+    ; the pipeline the same way the launch ceiling does, which frees both keys.
+    if (Launch.state = "LOGIN_WAIT" && Launch.loginEnteredAt
+     && A_TickCount - Launch.loginEnteredAt > CFG.loginWaitCeilingMs) {
+        _FSLog("LAUNCH LOGIN_WAIT ceiling reached after "
+             . ((A_TickCount - Launch.loginEnteredAt) // 1000) . "s -- aborting the"
+             . " pipeline so F1 and F2 are usable again")
+        Launch.state := "HAMMERING"      ; fall into the ceiling abort below
+        Launch.sessionStart := 0
+    }
 
     ; Hard ceiling (CFG.launchCeilingMs, default 5 min).
     if (Launch.state != "LOGIN_WAIT"
@@ -10307,10 +10781,12 @@ _LaunchPipelineAlive() {
 ; permanently disconnected or input-shielded -- the "stuck frozen, had to
 ; restart" failure. Harmless if the normal path already cleaned up.
 _F1FailsafeRelease() {
-    ; FORCED. This runs at most once per press, and only when the F1 thread did
-    ; not clean up after itself -- which is exactly the situation in which the
-    ; _ipBlockOn flag cannot be trusted. Paying two netsh calls here is the
-    ; whole point of a failsafe.
+    ; FORCED, and it now runs on EVERY press rather than only when the F1 thread
+    ; died. Both cases share the same problem: the _ipBlockOn flag records that
+    ; a delete was attempted, not that it succeeded, so it cannot be trusted to
+    ; decide whether a rule is still on the machine. Two netsh calls, a couple
+    ; of seconds after the skip is over and off the critical path, is what makes
+    ; "a block is always released" a guarantee instead of an expectation.
     try RemoveIPBlock(true)
     try StopHSInputShield()
     ; The Battle.net guard is deliberately NOT stopped here. It is bounded and
@@ -10388,10 +10864,32 @@ Hotkey_F1() {
     ; addresses too, and the fast path cannot report them -- taking it would
     ; quietly turn the documented sledgehammer back into the smart one at the
     ; exact moment someone reached for it because smart was picking wrong.
-    fast := (CFG.f1Target = "all") ? {ips: "", cnt: 0, detail: ""}
+    fast := (CFG.f1Target = "all") ? {ips: "", cnt: 0, svcCnt: 0, v6Cnt: 0, detail: ""}
                                    : _FastGameServerIPs(hsPID)
-    if (fast.ips != "") {
-        r := {nonSvcIps: fast.ips, svcNewestIp: "", svcIps: "", svcCnt: 0
+
+    ; TAKE THE FAST RESULT ONLY WHEN IT IS THE WHOLE ANSWER.
+    ;
+    ; The TCP table cannot report connection creation times, so it cannot pick
+    ; the NEWEST services-port connection -- and on setups where the match runs
+    ; over 1119 that is the game. Taking the fast result whenever it found
+    ; anything at all quietly reintroduced the gate this file spends thirty
+    ; lines below rejecting: Hearthstone holds incidental public connections
+    ; (shop, news, telemetry, a 443 CDN keep-alive), so "the fast path found
+    ; something" is not the same as "the fast path found the game". F1 would
+    ; block a CDN address for a second and a half while the match ran on
+    ; untouched -- a press that appears to do nothing, intermittently, depending
+    ; on whether an incidental connection happened to be established.
+    ;
+    ; svcCnt is the discriminator, and the fast path CAN count reliably even
+    ; though it cannot order. Two or more services connections means the
+    ; services fallback is live and creation times are required, so defer to
+    ; PowerShell. Otherwise the fallback could not have fired anyway and the
+    ; fast answer is complete.
+    ; fast.v6Cnt > 0 means this process also has IPv6 connections the fast read
+    ; could not interpret, so its answer might be an incidental IPv4 address
+    ; while the match runs over v6. Incomplete is not an answer.
+    if (fast.ips != "" && fast.svcCnt < 2 && fast.v6Cnt = 0) {
+        r := {nonSvcIps: fast.ips, svcNewestIp: "", svcIps: "", svcCnt: fast.svcCnt
             , cnt: fast.cnt, detail: fast.detail}
     } else {
         r := FindGameServerIPs(hsPID)
@@ -10446,6 +10944,10 @@ Hotkey_F1() {
     }
 
     if CFG.f1DebugLog {
+        try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") . " F1 lookup="
+            . ((fast.ips != "" && fast.svcCnt < 2 && fast.v6Cnt = 0) ? "fast" : "powershell")
+            . " fastIps=" . (fast.ips = "" ? "(none)" : fast.ips)
+            . " fastSvcCnt=" . fast.svcCnt . " fastV6=" . fast.v6Cnt . "`n", _LogPath())
         try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") . " F1 method=" . CFG.f1Method
             . " target=" . CFG.f1Target . " pid=" . hsPID . " cnt=" . r.cnt
             . " svcCnt=" . r.svcCnt . " block=" . target
@@ -10459,6 +10961,10 @@ Hotkey_F1() {
     }
 
     BgHUD.Show("Skip (" . target . ")…")
+    ; Assigned BEFORE the try, because the finally reads it. In AutoHotkey v2 an
+    ; unset local throws when read, and a throw inside finally would replace a
+    ; real error with a meaningless one -- and skip the cleanup after it.
+    shieldHandedOver := false
     try {
         StartHSInputShield("F1", CFG.forcefulHoldMs + 2500)
 
@@ -10495,24 +11001,54 @@ Hotkey_F1() {
         }
 
         RemoveIPBlock()
-        ; STOP THE INPUT SHIELD NOW. It was armed for the full ceiling +2.5s;
-        ; leaving it running after an EARLY lift left the game unresponsive
-        ; for seconds after the network was already restored -- the reported
-        ; freeze. The hold is over, so the shield's job is over.
-        try StopHSInputShield()
-        SetTimer(_F1FailsafeRelease, 0)      ; normal path cleaned up
+        ; ── THE SHIELD OUTLIVES THE BLOCK, DELIBERATELY ──────────────────────
+        ; Deleting the firewall rule is the START of the reconnect, not the end
+        ; of the skip. The client still has to notice the drop, re-establish and
+        ; replay to the result; a click landing in that window goes into a board
+        ; the user cannot see yet. This used to call StopHSInputShield here, so
+        ; clicks went live the instant the rule was gone.
+        ;
+        ; It is not simply left on its original ceiling either -- that was the
+        ; opposite complaint, a game that stayed dead for seconds after the
+        ; network was back. The shield is re-aimed at a short, explicit window
+        ; measured from the release.
+        _ExtendHSInputShield(CFG.f1PostReleaseShieldMs)
+        shieldHandedOver := (CFG.f1PostReleaseShieldMs > 0)
+
+        ; ── THE FAILSAFE IS DEFERRED, NOT DISARMED ───────────────────────────
+        ; This used to cancel it outright on the strength of RemoveIPBlock
+        ; having been CALLED. But that function judges nothing: the OUT delete
+        ; is fired asynchronously and neither exit code is read, so a delete
+        ; that did not take still clears the flag -- after which the finally's
+        ; RemoveIPBlock is a no-op and the failsafe is gone. Hearthstone stays
+        ; firewalled off its own game server until the script exits.
+        ;
+        ; Re-arming it just past the shield instead costs two netsh calls a
+        ; couple of seconds after the skip is already over, off the critical
+        ; path, and makes "a rule can never survive a press" true rather than
+        ; probable. It is idempotent and forced, so it is a no-op on the ledger
+        ; and a real sweep on the machine.
+        _f1FailsafeAt := CFG.f1PostReleaseShieldMs + 1000
+        if (_f1FailsafeAt < 2500)
+            _f1FailsafeAt := 2500
+        SetTimer(_F1FailsafeRelease, -_f1FailsafeAt)
 
         BgHUD.Show("Reconnecting…", 1000)
     } catch {
         BgHUD.Show("F1 failed — unblocking", 1500)
     } finally {
         try RemoveIPBlock()
-        ; The settle sleep only exists so the shield outlives the unblock on the
-        ; FAILURE path. On the normal path the shield was already stopped
-        ; twenty lines up, so sleeping here is 300 ms of the key simply not
-        ; being ready again for no reason. Sleep only if there is still a shield
-        ; to hold.
-        if (InputShield.active) {
+        ; DO NOT KILL A SHIELD THAT WAS DELIBERATELY HANDED OVER.
+        ;
+        ; On the normal path the block above re-aimed the shield at the
+        ; post-release window and expects the 50 ms tick to expire it on
+        ; schedule. Stopping it here would undo that in the same breath, and the
+        ; clicks-land-too-early bug would be exactly as it was.
+        ;
+        ; The settle sleep therefore belongs to the FAILURE path only: an
+        ; exception, or a press that never reached the release. There the shield
+        ; is still on its original ceiling and has to be brought down by hand.
+        if (!shieldHandedOver && InputShield.active) {
             Sleep(300)
             try StopHSInputShield()
         }
@@ -10888,6 +11424,7 @@ Hotkey_F3() {
     ; window work is idempotent and re-entrancy is already handled by the 250 ms
     ; debounce above and by each function's own guards.
     unlocking := false
+    deferEarlyCloakStop := false
     Critical(true)
     try {
         if State.fsMainLocked {
@@ -10911,7 +11448,17 @@ Hotkey_F3() {
             ;
             ; The lock decides whether FIRESTONE'S OWN windows are on screen. A
             ; notification is not one of those and never was.
-            StopEarlyOverwolfCloak()
+            ; NOT CALLED HERE. This does a full cross-process sweep of every
+            ; Overwolf window -- WinGetTitle (a blocking WM_GETTEXT), WinGetPos,
+            ; SetWindowPos, DWM calls -- and this block runs under Critical(true),
+            ; during which NOTHING else in the script can run: not the hotkeys,
+            ; not the reachability watchdog, not F4. On a hung Firestone window
+            ; that is a total freeze with nothing able to recover it, which is
+            ; the exact rule the comment at the top of this function states.
+            ; Deferred to just past Critical(false), keeping the order that
+            ; matters: the sweeper is stopped before this, so the popup is
+            ; handed over rather than released.
+            deferEarlyCloakStop := true
             unlocking := true
         }
     } catch {
@@ -10920,6 +11467,11 @@ Hotkey_F3() {
         return
     }
     Critical(false)
+
+    ; Window work belongs OUT here, where a stalled cross-process call costs
+    ; time instead of costing the whole script.
+    if deferEarlyCloakStop
+        try StopEarlyOverwolfCloak()
 
     try {
         if unlocking {
@@ -10932,7 +11484,11 @@ Hotkey_F3() {
     } catch {
         try {
             State.fsMainLocked := true
-            SetTimer(FSMainMonitor, 200)
+            ; _FSCoastMs(), not a bare 200: FSMainMonitor caches the period it
+            ; last applied, and arming it from outside with a value that cache
+            ; never learns about makes every later tick decline to re-arm --
+            ; the sweep sticks at 200 ms for the rest of the session.
+            SetTimer(FSMainMonitor, _FSCoastMs())
             SuppressFirestoneMainTick()
         }
         BgHUD.Show("F3 error – reset", 1200)
@@ -11175,7 +11731,19 @@ try FSRepairStuckAlpha()
 try FSRepairStrandedWindows()
 
 ; Start Firestone‑Main monitor in locked mode.
-LockFirestoneMain()
+;
+; GATED ON THERE BEING A FIRESTONE. This call arms FSMainMonitor at 50 ms,
+; and it ran unconditionally -- so on a machine with no Overwolf install the
+; sweep was already running by the time the check further down logged
+; "Firestone subsystems stay dormant" and declined to start it. Dormant has
+; to mean not running.
+if FirestoneInstalled()
+    LockFirestoneMain()
+
+; Ledger pruning, on a schedule that does not depend on the monitor lock.
+; Ten seconds is far more often than handle reuse can matter and the pass is
+; a handful of IsWindow calls over maps that are normally near-empty.
+SetTimer(_PruneLedgersTick, 10000)
 
 ; Register deterministic cleanup for all exit paths.
 OnExit(ExitCleanup)
