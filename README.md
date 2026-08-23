@@ -4,6 +4,8 @@
 
 A single-file AutoHotkey v2 tool for Hearthstone Battlegrounds. Four keys, nothing to configure before you start.
 
+Requires AutoHotKey V2 From: https://www.autohotkey.com/v2/
+
 | Key | What it does |
 |:---:|---|
 | **F1** | **Skip the combat animation.** The headline feature. Jump straight to the result of a fight instead of watching it play out. Nothing is lost — the match keeps resolving on Blizzard's servers and you rejoin at the outcome. |
