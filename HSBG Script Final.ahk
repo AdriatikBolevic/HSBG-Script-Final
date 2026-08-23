@@ -90,10 +90,9 @@
 ;        on F4, and on any exit.
 ;
 ;   F4   Full shutdown. Closes Overwolf, Battle.net and Hearthstone, restores
-;        anything the script changed, and exits. The HSReplay tracker is LEFT
-;        RUNNING by default -- it is also a collection browser and a stats
-;        window -- but a tracker F3 had hidden is always handed back first.
-;        HDTCloseOnF4=1 closes it too, and only if F2 was what started it.
+;        anything the script changed, and exits. The HSReplay tracker is also
+;        closed (if it is running) — no config option, no condition. A tracker
+;        that F3 had hidden is always handed back first.
 ;
 ;
 ; CONFIGURATION
@@ -835,15 +834,6 @@ global CFG := {
                                        ; launches. Past this the Play press fires
                                        ; regardless and the reason is logged.
 
-    hdtCloseOnF4:            false,    ; false = F4 shuts down Hearthstone,
-                                       ; Battle.net and Overwolf and LEAVES THE
-                                       ; TRACKER RUNNING. That is deliberate: the
-                                       ; tracker is also a collection browser and
-                                       ; a stats window, and people keep it open
-                                       ; between sessions. true = close it too,
-                                       ; but only if F2 was what started it --
-                                       ; a tracker that was already running when
-                                       ; the script started is never closed by it.
     hdtHideWatchMs:          400,      ; while F3 has the overlay hidden, how often
                                        ; to catch a tracker window BORN hidden-side
                                        ; (a new panel, a re-created overlay) and
@@ -1397,14 +1387,6 @@ _WriteDefaultConfig(path) {
     txt .= ";   capped at 25 seconds; past that Play fires anyway and the log says so.`r`n"
     txt .= "HDTGatePlay=1`r`n"
     txt .= "`r`n"
-    txt .= "; HDTCloseOnF4 -- default 0 (off).`r`n"
-    txt .= ";`r`n"
-    txt .= ";   0 = F4 closes Hearthstone, Battle.net and Overwolf and LEAVES the`r`n"
-    txt .= ";       tracker running. It is also a collection browser and a stats`r`n"
-    txt .= ";       window, and most people keep it open between sessions.`r`n"
-    txt .= ";   1 = F4 closes it too -- but only if F2 was what started it. A tracker`r`n"
-    txt .= ";       that was already open before HSBG started is never closed by it.`r`n"
-    txt .= "HDTCloseOnF4=0`r`n"
     try FileAppend(txt, path, "UTF-8-RAW")
     _MakeConfigEditable(path)
 }
@@ -1537,8 +1519,6 @@ LoadUserConfig() {
         } catch {
             CFG.hdtPath := ""
         }
-        CFG.hdtGatePlay   := (_CfgInt(path, "HDTGatePlay",   1, 0, 1) = 1)
-        CFG.hdtCloseOnF4  := (_CfgInt(path, "HDTCloseOnF4",  0, 0, 1) = 1)
 
         _FSLog("CONFIG read " . path
              . " -- MonitorLock=" . (CFG.lockWindowsToChosenMonitor ? 1 : 0)
@@ -1548,7 +1528,6 @@ LoadUserConfig() {
              . " FreqMode="       .  CFG.hotkeyFreqMode
              . " Tracker="        .  CFG.tracker
              . " HDTGatePlay="    . (CFG.hdtGatePlay  ? 1 : 0)
-             . " HDTCloseOnF4="   . (CFG.hdtCloseOnF4 ? 1 : 0)
              . " HDTPath="        .  CFG.hdtPath)
     } catch as e {
         try _FSLog("CONFIG FAILED to load: " . e.Message
@@ -1591,8 +1570,8 @@ global State := {
     trackerMode:             "",
     trackerAsked:            false,   ; true = the picker has run this session,
                                       ; so a second F2 does not re-prompt.
-    hdtLaunchedByUs:         false,   ; true = F2 started the tracker, so F4 may
-                                      ; close it (only when CFG.hdtCloseOnF4).
+    hdtLaunchedByUs:         false,   ; true = F2 started the tracker (used for
+                                      ; logging only — F4 closes it regardless).
     hdtHidden:               false,   ; true = F3 currently has the tracker's
                                       ; windows cloaked.
     hdtElevationWarned:      false,   ; one warning per session, not one per F2.
@@ -4000,7 +3979,7 @@ _TrackerNoteForeignWindow(exe) {
 ; Called from F4 and from ExitCleanup. Safe to call repeatedly, safe to call
 ; when no tracker has ever run, and safe to call under Firestone.
 ;
-; TWO JOBS, AND ONLY THE FIRST IS UNCONDITIONAL.
+; TWO JOBS, AND BOTH ARE UNCONDITIONAL.
 ;
 ;   1. Un-cloak anything F3 hid. This must happen on EVERY exit path, including
 ;      the ones nobody plans -- tray exit, reload, an uncaught error. A cloak
@@ -4009,16 +3988,15 @@ _TrackerNoteForeignWindow(exe) {
 ;      left with a running tracker they cannot see, no taskbar route back, and
 ;      no reason to connect it to a script they just closed.
 ;
-;   2. Close the tracker, but only when the user asked for that (hdtCloseOnF4)
-;      AND F2 is what started it. A tracker that was already open when the
-;      script started belongs to the user's session, not to this one.
+;   2. Close the tracker if it is running. No config check, no "who started it?"
+;      condition – F4 kills it unconditionally, just like Hearthstone and
+;      Battle.net.
 _TrackerShutdown() {
     global CFG, State
 
     try HDTReleaseAll()
 
-    if !(CFG.hdtCloseOnF4 && State.hdtLaunchedByUs)
-        return false
+    ; F4 closes the tracker unconditionally – no config, no "who started it" check.
     if !HDTRunning()
         return false
 
@@ -4037,8 +4015,7 @@ _TrackerShutdown() {
         _FSLog("HDT-SHUTDOWN the tracker did not close when asked -- forcing it")
         try Run('taskkill /F /IM HearthstoneDeckTracker.exe /T', , "Hide")
     } else {
-        _FSLog("HDT-SHUTDOWN tracker closed (F2 started it, and"
-             . " HDTCloseOnF4 is on)")
+        _FSLog("HDT-SHUTDOWN tracker closed")
     }
     State.hdtLaunchedByUs := false
     return true
