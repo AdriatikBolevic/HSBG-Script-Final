@@ -2,9 +2,7 @@
 
 **Skip combat animations with one key. Launch your whole session with another.**
 
-A single-file AutoHotkey v2 tool for Hearthstone Battlegrounds. Four keys, nothing to configure before you start.
-
-Requires AutoHotKey V2 From: https://www.autohotkey.com/v2/
+A single-file AutoHotkey v2 tool for Hearthstone Battlegrounds. Four keys, nothing to configure before you start besides optional feature with on/off switches in the included config file. Obviously Requires AutoHotKey V2.
 
 | Key | What it does |
 |:---:|---|
