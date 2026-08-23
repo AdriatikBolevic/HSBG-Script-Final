@@ -41,7 +41,10 @@ Two things are **on by default**, and both can be switched off in `HSBG Config.i
 
 - **`HotkeyAudioVolume`** — `0`–`100`, default `25`.
 - **`HotkeySoundFile`** — path to your own PCM `.wav`, played for every hotkey in place of the built-in note. Empty by default; a missing file falls back to the built-in tone.
-- **`HotkeyFreqMode`** — `singular` (default) gives every key the same pitch, set by **`HotkeyFreqSingular`** (`110.0` Hz). `varied` gives each key its own, set by **`HotkeyFreqF1`–`F4`** (`82.41`, `110.00`, `73.42`, `55.00` Hz).
+- **`HotkeyFreqMode`** — whether every key sounds the same note, or each key gets its own. This is a **word, not a number**: the file ships with the line `HotkeyFreqMode=singular`, and you change that single word so it reads `HotkeyFreqMode=varied`. Nothing else has to move.
+  - `singular` — all four keys play **`HotkeyFreqSingular`**, `110.0` Hz by default. The `HotkeyFreqF1`–`F4` lines are sitting right there in the file but are ignored.
+  - `varied` — each key plays its own line instead: **`HotkeyFreqF1`–`F4`**, `82.41`, `110.00`, `73.42` and `55.00` Hz by default, so F1 and F4 are two different presses to your ear. Leave one blank or set it to `0` and that key falls back to `HotkeyFreqSingular`.
+  - Pitches are accepted between **20 and 2000 Hz**; anything outside that, or not a number, is ignored in favour of the default and noted in the log. Any spelling other than `singular` or `varied` is read as `singular`.
 
 Every one of these is also documented in comments inside the file itself, and again under [Settings](#settings).
 
@@ -168,9 +171,11 @@ Four applications are involved in a Battlegrounds session. Left alone they produ
 | `HotkeyAudio` | `1` | Play a short, deep note when a hotkey fires, so a press is confirmed without looking away from the game. `0` for silence. |
 | `HotkeyAudioVolume` | `25` | `0`–`100`. Ignored while `HotkeyAudio=0`. |
 | `HotkeySoundFile` | *(empty)* | Path to your own PCM `.wav`, played for every hotkey instead of the built-in note. Falls back to the built-in tone if the file is missing. |
-| `HotkeyFreqMode` | `singular` | `singular` — every key sounds the same note. `varied` — each key gets its own pitch. |
-| `HotkeyFreqSingular` | `110.0` | Pitch in Hz used by every key in `singular` mode. |
-| `HotkeyFreqF1`–`F4` | `82.41`, `110.00`, `73.42`, `55.00` | Per-key pitches used in `varied` mode. Blank or `0` falls back to `HotkeyFreqSingular`. |
+| `HotkeyFreqMode` | `singular` | A word, not a number. `singular` — every key sounds the same note. `varied` — each key gets its own pitch. Any other value is read as `singular`. |
+| `HotkeyFreqSingular` | `110.0` | Pitch in Hz used by every key in `singular` mode, and the fallback for an unset key in `varied` mode. |
+| `HotkeyFreqF1`–`F4` | `82.41`, `110.00`, `73.42`, `55.00` | Per-key pitches used in `varied` mode; ignored in `singular`. Blank or `0` falls back to `HotkeyFreqSingular`. |
+
+Pitches must be between `20` and `2000` Hz. A value outside that range, or one that isn't a number, is discarded in favour of the default and logged as `CONFIG <key>=<value> is not a number` or `is out of range`.
 
 Settings are read at start-up. Use **"Reload settings"** in the [tray menu](#the-tray-menu) to apply a change without restarting.
 
