@@ -30,14 +30,20 @@ That is the whole of it. Everything below is detail for when you want it.
 
 ### What's on out of the box
 
-Two things are **on by default**, and both can be switched off in `HSBG Config.ini` — tray icon → *Open settings*. They are the only on/off switches in that file; everything else in it tunes the sound.
+Two things are **on by default**, and both can be switched off in `HSBG Config.ini` — tray icon → *Open settings*. They are the only on/off switches in the file.
 
 | Setting | What it does while it's on | Off |
 |---|---|---|
 | **`MonitorLock`** | Battle.net, the Blizzard Update Agent, Hearthstone and the on-screen status text all open on the monitor you started the script from. Start it on the screen you want to play on and the rest follows. Firestone's own windows are deliberately exempt, so they stay wherever you put them — usually a second screen. | `MonitorLock=0` — every window opens wherever Windows and the applications decide, and the script never moves anything. Makes no difference on a single monitor. |
-| **`HotkeyAudio`** | A short, deep guitar note plays each time a hotkey fires, so you know the press registered without looking away from the game. Pitch and volume are yours to change (`HotkeyAudioVolume`, `HotkeyFreqMode`), or point `HotkeySoundFile` at a `.wav` of your own. | `HotkeyAudio=0` — silent. |
+| **`HotkeyAudio`** | A short, deep guitar note plays each time a hotkey fires, so you know the press registered without looking away from the game. | `HotkeyAudio=0` — silent. |
 
-Change either one, then use **"Reload settings"** in the tray menu to apply it without restarting. Full detail on every setting is under [Settings](#settings).
+**Everything else in the file is sound tuning** — that is the whole of it:
+
+- **`HotkeyAudioVolume`** — `0`–`100`, default `25`.
+- **`HotkeySoundFile`** — path to your own PCM `.wav`, played for every hotkey in place of the built-in note. Empty by default; a missing file falls back to the built-in tone.
+- **`HotkeyFreqMode`** — `singular` (default) gives every key the same pitch, set by **`HotkeyFreqSingular`** (`110.0` Hz). `varied` gives each key its own, set by **`HotkeyFreqF1`–`F4`** (`82.41`, `110.00`, `73.42`, `55.00` Hz).
+
+Change anything here, then use **"Reload settings"** in the tray menu to apply it without restarting. The file documents itself in comments too — see [Settings](#settings) for the full table.
 
 ---
 
