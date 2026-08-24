@@ -425,7 +425,7 @@ global CFG := {
                                        ; fails to disconnect, this line says whether
                                        ; the game IP was even identified — the one
                                        ; question that matters for tuning gamePorts.
-    forcefulHoldMs:          2500,     ; HOW LONG F1 HOLDS THE BLOCK. DO NOT CUT
+    forcefulHoldMs:          4000,     ; HOW LONG F1 HOLDS THE BLOCK. DO NOT CUT
                                        ; THIS TO MAKE F1 "SNAPPIER" -- IT WAS,
                                        ; AND IT IS THE REASON THE FIRST PRESS
                                        ; STOPPED CATCHING.
@@ -443,6 +443,49 @@ global CFG := {
                                        ; historical failure of this exact knob,
                                        ; and cutting it 2500 -> 1500 for speed
                                        ; brought it straight back.
+                                       ;
+                                       ; ── WHY 4000 AND NOT 2500 ─────────────
+                                       ; 2500 catches a press made once combat
+                                       ; is ALREADY ROLLING, and nothing else.
+                                       ; The reason is what the skip actually
+                                       ; IS: the client is handed the whole
+                                       ; combat resolution in one go and then
+                                       ; animates it locally, so cutting the
+                                       ; connection mid-animation and restoring
+                                       ; it resyncs the client to a server state
+                                       ; that has moved on -- you land on the
+                                       ; result.
+                                       ;
+                                       ; Press at the END OF THE RECRUIT PHASE
+                                       ; and none of that is true yet. The
+                                       ; combat has not been sent. The block
+                                       ; goes on, expires before or barely after
+                                       ; the fight begins, and the reconnect is
+                                       ; then the thing that DELIVERS the combat
+                                       ; -- which the client duly animates in
+                                       ; full. The press does not fail loudly,
+                                       ; it does nothing, and the user presses
+                                       ; again once the fight is up. That second
+                                       ; press is the one that works, and it is
+                                       ; the same "I have to press it twice"
+                                       ; report as the 1500 regression wearing
+                                       ; a different hat.
+                                       ;
+                                       ; The measurement that sets this number:
+                                       ; a press landing ~1.5 s into combat and
+                                       ; holding 2500 works, so roughly 2.5 s of
+                                       ; blackout AFTER the fight begins is what
+                                       ; the client needs. An end-of-turn press
+                                       ; is up to ~1.5 s early. 2500 + 1500 =
+                                       ; 4000 covers both and covers nothing it
+                                       ; does not have to.
+                                       ;
+                                       ; Everything downstream derives from this
+                                       ; value -- input shield, failsafe,
+                                       ; Battle.net guard -- so it is still ONE
+                                       ; knob. If an end-of-turn press still
+                                       ; animates the fight, raise in 500 ms
+                                       ; steps. Never go under 2500.
                                        ;
                                        ; A press that fails costs its own hold,
                                        ; the cooldown, and a second press. The
@@ -514,12 +557,22 @@ global CFG := {
                                        ; the game feels unresponsive after a skip.
                                        ; 0 restores the old end-with-the-block
                                        ; behaviour.
-    f1AdapterHoldMs:         2000,     ; blackout for "adapter" mode. Deliberately
+    f1AdapterHoldMs:         4500,     ; blackout for "adapter" mode. Deliberately
                                        ; a little longer than forcefulHoldMs: an
                                        ; adapter down/up costs the OS time the
                                        ; firewall path does not, so this is what
                                        ; makes both F1 methods produce roughly the
                                        ; same felt downtime. Moves with it.
+                                       ;
+                                       ; IT HAD STOPPED MOVING WITH IT. This sat
+                                       ; at 2000 against a forcefulHoldMs of
+                                       ; 2500 -- SHORTER than the knob it claims
+                                       ; to lead, so the fallback method was
+                                       ; quietly the weaker of the two and would
+                                       ; have inherited the end-of-turn miss as
+                                       ; well. Re-derived: forcefulHoldMs + 500.
+                                       ; Only reachable with f1Method="adapter",
+                                       ; which is not the default.
     loginFallbackAfterMs:    50000,
     loginWaitCeilingMs:      1800000,  ; 30 min. How long the pipeline may sit
                                        ; waiting for a human to sign in to
@@ -2084,6 +2137,67 @@ EnsureHotkeyTones() {
     }
     _FSLog("AUDIO " . built . " of 4 hotkey notes ready, volume "
          . CFG.hotkeyAudioVolume . " (files in " . A_Temp . ")")
+    _PrimeAudioDevice()
+}
+
+; ── WHY THE FIRST NOTE OF A SESSION SOUNDED MUFFLED ──────────────────────────
+; Reported as "the first F2 is muted and low, every F after it is normal", and
+; it is a real fault rather than a volume setting.
+;
+; _WriteGuitarWav gives every note a plucked-string envelope: a 5 ms attack
+; ramp, then Exp(-t * 3.0), with the harmonics decaying faster still
+; (Exp(-t * 2.2 * k) -- the fifth partial is Exp(-11t) and is gone inside
+; 200 ms). Practically all of the note's loudness AND all of its brightness
+; live in the first ~150 ms of a 550 ms file.
+;
+; That envelope decides what a cold audio path sounds like. SoundPlay goes
+; through MCI, so the FIRST play in the process has to open the MCI device and
+; instantiate a WASAPI session, and on most laptops and monitor speakers the
+; amplifier is power-gated and needs a couple of hundred milliseconds to come
+; out of standby. Whatever is lost to that is taken off the FRONT of the note --
+; the attack and the harmonics -- and what is left is the tail of a 110 Hz
+; fundamental. The note is not quieter. It is muffled and pitched-down, which is
+; exactly how it was described.
+;
+; Every later press reuses a warm device, a live session and an awake amp, so
+; only the first one of a session is ever wrong. F2 is simply the key most
+; people press first; F1 pressed first sounds identical.
+;
+; THE FIX: pay that wake-up cost with a note nobody hears. This plays a
+; 200 ms tone at a peak amplitude of about 2 in 32768 -- roughly -84 dBFS,
+; below the noise floor of any consumer output and inaudible on anything --
+; as soon as the notes are built. It opens the MCI device, creates the audio
+; session and wakes the amp, so the first real press lands on a warm path.
+;
+; Deliberately NOT digital silence: some drivers gate on the presence of a
+; signal rather than on a stream existing, and would sleep straight through a
+; buffer of zeros. A signal that is real but inaudible satisfies both.
+;
+; Runs once per process (statics reset on reload, which is what we want), and
+; only when the sound is actually switched on -- the flag is set AFTER that
+; check, so switching audio on later still gets a prime.
+_PrimeAudioDevice() {
+    global CFG
+    static done := false
+    if (done || !CFG.hotkeyAudio)
+        return
+    done := true
+    try {
+        path := A_Temp . "\hsbg_tone_prime.wav"
+        if !FileExist(path)
+            _WriteGuitarWav(path, 110.0, 800, 0.05)   ; keep your values
+        if !FileExist(path) {
+            _FSLog("AUDIO prime tone could not be built at " . path
+                 . " -- the first note of this session may sound muffled")
+            return
+        }
+        SoundPlay(path)                                 ; first play
+        SoundPlay(path)                                 ; second play – solidifies DAC
+        _FSLog("AUDIO device primed (two 800ms tones, " . path . ")"
+             . " -- the audio hardware is now fully initialised")
+    } catch as e {
+        _FSLog("AUDIO prime threw: " . e.Message)
+    }
 }
 
 ; Play the note for a hotkey.

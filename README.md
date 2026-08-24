@@ -125,7 +125,9 @@ Blizzard's login and services connection (TCP 1119) is deliberately left alive, 
 | `F1 ignored — launch in progress` | An F2 pipeline is genuinely still running. If the flag is stale, F1 clears it and proceeds. |
 | `HS not running` | There is no Hearthstone to skip in. |
 
-Default hold: 2.5 seconds, then clicks stay swallowed for a further 1.5 seconds while the client reconnects — lifting the block is the *start* of the reconnect, not the end of the skip, and a click landing in that window goes into a board you cannot see yet. Cooldown: 0.75 seconds between presses.
+**When to press it.** Any time from the end of the recruit phase onwards. The hold is sized so that a press made as your turn ends is still in effect once the fight actually begins — which matters, because the skip works by resyncing the client past a combat it has already been handed, and a press made *before* the client has that combat has nothing to skip yet. See `forcefulHoldMs` in [Advanced tuning](#advanced-tuning) for the full reasoning.
+
+Default hold: 4 seconds, then clicks stay swallowed for a further 1.5 seconds while the client reconnects — lifting the block is the *start* of the reconnect, not the end of the skip, and a click landing in that window goes into a board you cannot see yet. Cooldown: 0.75 seconds between presses.
 
 The Battle.net launcher is held down for the hold and about six seconds after it, which is the window in which a disconnect would otherwise pop it back onto your screen. A failsafe timer removes the block even if the press dies part-way through, and it is re-armed rather than cancelled after a successful release — so an interrupted press cannot leave Hearthstone firewalled off its own game server.
 
@@ -321,8 +323,8 @@ BNET-STALL no Hearthstone 25000ms after Play -- restoring the launcher
 FS-POPUP killed at namechange hwnd=... size=440x570 -- cloaked, parked off-screen and closed on sight
 FS-PAINT PROVEN after 875ms title="Firestone - Main" distinct=360 policy=park
 F1 lookup=fast fastIps=... fastSvcCnt=1 fastV6=0
-F1 method=ipblock target=smart pid=... cnt=... svcCnt=... block=... hold=2500
-F1 hold 2503ms (fixed 2500)
+F1 method=ipblock target=smart pid=... cnt=... svcCnt=... block=... hold=4000
+F1 hold 4003ms (fixed 4000)
 HOTKEY stuck modifier(s) Alt held with 10000ms of no physical input -- releasing
 UPDATE v5.0.0 is available (this build is v4.0.0) -- asset: https://github.com/.../HSBG%20Script%20Final.ahk
 UPDATE this build (v4.0.0) is current; newest published is v4.0.0
@@ -354,7 +356,12 @@ No — and the log proves it rather than asserting it. HSBG only ever moves, hid
 Check the log lines for the press. `F1 lookup=` says which path found the connection and what it saw; `F1 method=... block=` says what was actually blocked. If `block=` is empty and the HUD said *No game connection found*, neither path identified one — set `f1Target := "all"` in the script's `CFG` block.
 
 **F1 seems to need two presses.**
-It doesn't. The HUD names the refusal you hit — `F1 cooling down…` for a press inside the 0.75 s window, `F1 ignored — launch in progress` for one during an F2. A press that is refused is not a press that failed to skip, and reading the message saves you the second one.
+Usually it doesn't, and the HUD names the refusal you hit — `F1 cooling down…` for a press inside the 0.75 s window, `F1 ignored — launch in progress` for one during an F2. A press that is refused is not a press that failed to skip, and reading the message saves you the second one.
+
+The one case where the second press was doing real work is a press made **as your turn ends**, before the fight starts. Nothing is refused there — the log shows a normal press, the right address blocked, the full hold served — and the skip still does not happen, because there was no combat to skip yet and the reconnect is what handed it over. That is a `forcefulHoldMs` that expires too early, not a dropped press, and the default of `4000` is sized to cover it. If you are on an older build with `2500`, this is the symptom.
+
+**F1 does nothing when I press it right as my turn ends.**
+Raise `forcefulHoldMs` in 500 ms steps. The block has to still be in place once the fight actually begins, and on a slow transition 4 seconds may not reach. The log line for the press will look completely healthy either way — a press that lands too early fails silently by construction, which is why the fix is the hold length rather than anything in the lookup.
 
 **F1 makes Battle.net pop up, or disconnects it.**
 It shouldn't. The firewall rules are scoped to Hearthstone's executable, so the launcher's own connection is never touched, and the launcher is held down for the hold plus six seconds on top of that. If you see `F1 WARNING: Hearthstone's executable path is unknown`, the rules could not be scoped for that one press and fell back to machine-wide — which is the case where the launcher can react.
@@ -409,7 +416,7 @@ Everything not in `HSBG Config.ini` lives in the `CFG` block at the top of the s
 
 | Setting | Default | Effect |
 |---|---|---|
-| `forcefulHoldMs` | `2500` | How long F1 holds the connection block. **Do not shorten this to make F1 feel faster.** A firewall block drops packets silently, so the client only notices when its own timeout expires; mid-combat it shrugs off a short outage and no skip happens at all. A press that fails costs more time than the longer hold does. |
+| `forcefulHoldMs` | `4000` | How long F1 holds the connection block. **Do not shorten this to make F1 feel faster.** Two separate failures live under this one knob. A firewall block drops packets silently, so the client only notices when its own timeout expires; mid-combat it shrugs off a short outage and no skip happens at all. Separately, a press made at the *end of the recruit phase* is made before the client has been sent the combat at all — if the block expires around the moment the fight begins, the reconnect is what delivers it, and you watch the whole thing. `4000` is `2500` (the blackout the client needs once combat is rolling) plus `1500` (how early an end-of-turn press can land). A press that fails costs more time than the longer hold does. |
 | `f1PostReleaseShieldMs` | `1500` | How long clicks stay swallowed *after* the block lifts, covering the reconnect. Raise if clicks still land early; `0` ends the shield with the block. |
 | `cooldownTime` | `750` | Minimum gap between F1 presses. A press inside it is refused with a toast rather than silently. |
 | `f1Target` | `"smart"` | Which connection F1 blocks. `"all"` is a sledgehammer fallback if `"smart"` ever picks wrong, and it deliberately skips the fast lookup path. |
