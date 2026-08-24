@@ -1,4 +1,4 @@
-![HSBG — Hearthstone Battlegrounds Session Manager](hsbg-header.png)
+![HSBG — Hearthstone Battlegrounds Session Manager]
 
 # HSBG — Hearthstone Battlegrounds Session Manager
 
