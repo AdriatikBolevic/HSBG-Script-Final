@@ -256,7 +256,7 @@
 ; SECTION 13 parses it numerically, which is what makes 4.10.0 newer than 4.9.0
 ; rather than older. One number, published and internal, so a user reading the
 ; tray tooltip and a user reading the releases page are reading the same thing.
-global HSBG_BUILD := "v4.0.0"
+global HSBG_BUILD := "v5.0.0"
 #SingleInstance Force
 
 ; ── THREAD SETTINGS: the single largest source of sluggishness in this script ─
