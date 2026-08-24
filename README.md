@@ -1,3 +1,5 @@
+![HSBG — Hearthstone Battlegrounds Session Manager](hsbg-header.png)
+
 # HSBG — Hearthstone Battlegrounds Session Manager
 
 **Skip combat animations with one key. Launch your whole session with another.**
