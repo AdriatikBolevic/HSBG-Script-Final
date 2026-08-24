@@ -1,5 +1,3 @@
-![HSBG — Hearthstone Battlegrounds Session Manager]
-
 # HSBG — Hearthstone Battlegrounds Session Manager
 
 **Skip combat animations with one key. Launch your whole session with another.**
