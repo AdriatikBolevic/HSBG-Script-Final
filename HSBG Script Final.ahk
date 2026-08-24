@@ -250,7 +250,13 @@
 ; running script is the updated file" are separate claims -- and telling them
 ; apart by behaviour alone has cost real time on this script. This makes the
 ; running build identifiable at a glance, without opening anything.
-global HSBG_BUILD := "v9.1"
+;
+; THIS IS ALSO THE VERSION THE UPDATE CHECK COMPARES, so it must match the
+; release tag on GitHub exactly, and it must be semantic: MAJOR.MINOR.PATCH.
+; SECTION 13 parses it numerically, which is what makes 4.10.0 newer than 4.9.0
+; rather than older. One number, published and internal, so a user reading the
+; tray tooltip and a user reading the releases page are reading the same thing.
+global HSBG_BUILD := "v4.0.0"
 #SingleInstance Force
 
 ; ── THREAD SETTINGS: the single largest source of sluggishness in this script ─
@@ -826,6 +832,13 @@ global CFG := {
     ; ordering rule Firestone already has for a different reason (it reads the
     ; game's memory and must be attached first); the two overlays disagree about
     ; why the tracker goes first, and agree completely that it does.
+    ;
+    ; NOT A SETTINGS-FILE KEY, DELIBERATELY. Waiting for the tracker is not a
+    ; preference -- it is the only ordering in which the tracker works at all,
+    ; and hdtReadyCeilingMs below already bounds what a tracker that never
+    ; arrives can cost. Offering it as a switch would only let someone turn off
+    ; the thing that makes their overlay work. It stays here, an engineering
+    ; escape hatch in the CFG block with every other one.
     hdtGatePlay:             true,
     hdtReadyCeilingMs:       25000,    ; BOUNDED, for the same reason every other
                                        ; gate in this script is bounded: a tracker
@@ -1105,6 +1118,12 @@ global CFG := {
                                        ; HKCU, exactly what changing the display in
                                        ; HS's graphics options writes.
 
+    ; ── Update check ────────────────────────────────────────────────────────
+    ; A genuine preference, so it is mirrored in HSBG Config.ini as UpdateCheck
+    ; and read back from there -- unlike everything else in this block, which is
+    ; engineering. Off means no network request is ever made.
+    updateCheck:             true,
+
     ; ── Cold‑launch survivability ───────────────────────────────────────────
     launchCeilingMs:         300000,   ; hard ceiling of the F2 state machine.
                                        ; A cold boot -- cold-disk Battle.net,
@@ -1376,16 +1395,24 @@ _WriteDefaultConfig(path) {
     txt .= ";   portable or relocated install that is not being found.`r`n"
     txt .= "HDTPath=`r`n"
     txt .= "`r`n"
-    txt .= "; HDTGatePlay -- default 1 (on). Ignored unless the HSReplay tracker is in use.`r`n"
+    txt .= "; ----------------------------------------------------------------------------`r`n"
+    txt .= ";  UPDATES`r`n"
+    txt .= "; ----------------------------------------------------------------------------`r`n"
+    txt .= "`r`n"
+    txt .= "; UpdateCheck -- default 1 (on)`r`n"
     txt .= ";`r`n"
-    txt .= ";   1 = wait for the tracker to be running before pressing Play.`r`n"
-    txt .= ";   0 = press Play as soon as the launcher is ready.`r`n"
+    txt .= ";   1 = once per run, about ten seconds after start-up, ask GitHub whether a`r`n"
+    txt .= ";       newer release exists. If one does, a message appears briefly, the`r`n"
+    txt .= ";       tray tooltip says so, and a tray menu item offers to download it`r`n"
+    txt .= ";       NEXT TO this script -- nothing is ever installed or overwritten`r`n"
+    txt .= ";       for you.`r`n"
+    txt .= ";   0 = never contact the network for any reason.`r`n"
     txt .= ";`r`n"
-    txt .= ";   The tracker writes the log settings Hearthstone needs, and Hearthstone`r`n"
-    txt .= ";   reads them once, when it starts. Launch the game first and the tracker`r`n"
-    txt .= ";   asks you to restart it -- which costs a whole relaunch. The wait is`r`n"
-    txt .= ";   capped at 25 seconds; past that Play fires anyway and the log says so.`r`n"
-    txt .= "HDTGatePlay=1`r`n"
+    txt .= ";   The request sends no information about you or your machine: it asks what`r`n"
+    txt .= ";   the newest version is and compares locally. A failure of any kind --`r`n"
+    txt .= ";   offline, blocked, rate-limited -- is silent, and only ever noted in the`r`n"
+    txt .= ";   log.`r`n"
+    txt .= "UpdateCheck=1`r`n"
     txt .= "`r`n"
     try FileAppend(txt, path, "UTF-8-RAW")
     _MakeConfigEditable(path)
@@ -1520,6 +1547,8 @@ LoadUserConfig() {
             CFG.hdtPath := ""
         }
 
+        CFG.updateCheck := (_CfgInt(path, "UpdateCheck", 1, 0, 1) = 1)
+
         _FSLog("CONFIG read " . path
              . " -- MonitorLock=" . (CFG.lockWindowsToChosenMonitor ? 1 : 0)
              . " HotkeyAudio="    . (CFG.hotkeyAudio ? 1 : 0)
@@ -1527,8 +1556,8 @@ LoadUserConfig() {
              . " SoundFile="      .  CFG.hotkeySoundFile
              . " FreqMode="       .  CFG.hotkeyFreqMode
              . " Tracker="        .  CFG.tracker
-             . " HDTGatePlay="    . (CFG.hdtGatePlay  ? 1 : 0)
-             . " HDTPath="        .  CFG.hdtPath)
+             . " HDTPath="        .  CFG.hdtPath
+             . " UpdateCheck="    . (CFG.updateCheck ? 1 : 0))
     } catch as e {
         try _FSLog("CONFIG FAILED to load: " . e.Message
                  . " -- the settings file was NOT applied and the built-in"
@@ -11702,6 +11731,401 @@ CancelLaunchTimers() {
 }
 
 ; ==============================================================================
+; SECTION 13: UPDATE CHECK — is the user running the current release?
+; ==============================================================================
+;
+; Asks GitHub, once per run, whether a newer release exists. If one does, it
+; says so quietly and offers to fetch it. It never installs anything by itself.
+;
+; ── THE HARD CONSTRAINT: THIS MUST NOT BLOCK ──────────────────────────────────
+; AutoHotkey interrupts a thread BETWEEN lines, never inside one. A synchronous
+; HTTP call is a single line, so a hanging request freezes the entire script --
+; hotkeys, watchdogs, F4, all of it -- for as long as the socket takes to give
+; up. On a captive-portal hotel wifi that is thirty seconds of a dead keyboard,
+; and the user has no way to connect it to a version check they never asked for.
+;
+; So the request is issued ASYNCHRONOUSLY and polled from a timer. Each poll is
+; a non-blocking WaitForResponse(0) that returns immediately either way, and the
+; whole exchange is abandoned at a deadline regardless of what the socket is
+; doing. The worst case for the rest of the script is one extra timer tick.
+;
+; ── FAIL SILENT, ALWAYS ───────────────────────────────────────────────────────
+; No network, DNS poisoned by an ad-blocker, GitHub down, corporate proxy, rate
+; limit, malformed JSON, a tag someone typed as "final2" -- every one of these
+; ends in a log line and nothing else. A version check is a convenience. It has
+; no business producing an error message for a script whose job is to launch a
+; game, and a user who sees "update check failed" on a machine that is working
+; perfectly has been given a problem rather than a service.
+;
+; ── TWO SOURCES, IN ORDER ─────────────────────────────────────────────────────
+;   1. The GitHub Releases API. The correct answer when a release was published
+;      properly, and it carries the download URL for the attached .ahk.
+;   2. version.json in the repository. The fallback, for the two cases the API
+;      cannot cover: a release that was tagged but never published as a Release,
+;      and an IP that has exhausted the 60-per-hour unauthenticated rate limit.
+;      A shared address behind one NAT reaches that limit; a home connection
+;      never will.
+;
+; Whichever answers first wins, and the second is not consulted.
+;
+; ── WHAT IT DOES NOT DO ───────────────────────────────────────────────────────
+; It does not replace the running script. An elevated process overwriting its
+; own source file while AutoHotkey holds it open is how an install gets
+; corrupted, and the failure lands on a user who was told the update was safe.
+; The download lands BESIDE the current file, named for its version, and the
+; user swaps it themselves. That also means a bad release is one deletion away
+; from being undone rather than a reinstall.
+;
+; It sends nothing. The request is a plain GET with a User-Agent (GitHub rejects
+; API calls without one). No identifier, no version, no telemetry: the machine
+; asks what the newest version is and decides for itself whether it is behind.
+
+; The repository this build checks against. A fork changes these two lines and
+; nothing else.
+global HSBG_REPO_OWNER := "AdriatikBolevic"
+global HSBG_REPO_NAME  := "HSBG-Script-Final"
+
+global _updHttp        := ""        ; the in-flight request object
+global _updDeadline    := 0         ; abandon the exchange at this tick
+global _updStage       := ""        ; "api" | "raw" -- which source is in flight
+global _updNewVersion  := ""        ; tag of the newer release, once known
+global _updDownloadUrl := ""        ; direct .ahk URL, when the release has one
+global _updChecked     := false     ; one check per run, whatever the outcome
+
+_UpdReleasesPage() {
+    global HSBG_REPO_OWNER, HSBG_REPO_NAME
+    return "https://github.com/" . HSBG_REPO_OWNER . "/" . HSBG_REPO_NAME
+         . "/releases/latest"
+}
+
+; ------------------------------------------------------------------------------
+; Version comparison
+; ------------------------------------------------------------------------------
+;
+; Semantic, not lexical. "v4.10.0" is NEWER than "v4.9.0", and a string compare
+; says the opposite -- which would tell every user on 4.10 to downgrade, and
+; keep telling them, forever. Two-part versions are accepted and padded, so
+; "4.1" and "v4.1.0" compare equal.
+;
+; A pre-release suffix ("-beta", "+build") is trimmed rather than ordered. Doing
+; it properly means implementing the whole semver precedence table; trimming
+; means a beta of 5.0.0 reads as 5.0.0, which for a "should I update?" question
+; is the answer the user wants anyway.
+_UpdParseVersion(raw) {
+    v := Trim(raw)
+    v := RegExReplace(v, "^[vV]", "")           ; a leading v is decoration
+    v := RegExReplace(v, "[-+].*$", "")         ; drop pre-release / build
+    parts := []
+    for piece in StrSplit(v, ".") {
+        piece := Trim(piece)
+        if !IsInteger(piece)
+            return ""                            ; not a version we understand
+        parts.Push(Integer(piece))
+    }
+    if (parts.Length = 0 || parts.Length > 4)
+        return ""
+    while (parts.Length < 3)
+        parts.Push(0)
+    return parts
+}
+
+; Returns 1 if a > b, -1 if a < b, 0 if equal. Returns "" if either is
+; unparseable, which every caller treats as "do not claim anything".
+_UpdCompare(aRaw, bRaw) {
+    a := _UpdParseVersion(aRaw)
+    b := _UpdParseVersion(bRaw)
+    ; IsObject, not a comparison against "": _UpdParseVersion returns either an
+    ; Array or an empty string, and testing an Array with = is a type error in
+    ; AutoHotkey v2 -- which would throw inside the one subsystem whose entire
+    ; contract is that it fails silently.
+    if (!IsObject(a) || !IsObject(b))
+        return ""
+    loop 3 {
+        if (a[A_Index] > b[A_Index])
+            return 1
+        if (a[A_Index] < b[A_Index])
+            return -1
+    }
+    return 0
+}
+
+; ------------------------------------------------------------------------------
+; The check itself
+; ------------------------------------------------------------------------------
+
+; Armed from a deferred timer at start-up, never from a hotkey. Ten seconds in,
+; the launch sequence a user may have started with F2 is already past its
+; window-thrashing phase, and this costs it nothing.
+UpdateCheckStart() {
+    global CFG, _updChecked
+    if !CFG.updateCheck
+        return
+    if _updChecked
+        return
+    _updChecked := true
+    _UpdBegin("api")
+}
+
+_UpdBegin(stage) {
+    global _updHttp, _updDeadline, _updStage, HSBG_REPO_OWNER, HSBG_REPO_NAME
+    _updStage := stage
+
+    url := (stage = "api")
+         ? "https://api.github.com/repos/" . HSBG_REPO_OWNER . "/"
+           . HSBG_REPO_NAME . "/releases/latest"
+         : "https://raw.githubusercontent.com/" . HSBG_REPO_OWNER . "/"
+           . HSBG_REPO_NAME . "/main/version.json"
+
+    try {
+        _updHttp := ComObject("WinHttp.WinHttpRequest.5.1")
+        ; resolve, connect, send, receive. Generous enough for a slow link,
+        ; bounded enough that the deadline below is a backstop and not the
+        ; mechanism.
+        _updHttp.SetTimeouts(4000, 4000, 4000, 8000)
+        _updHttp.Open("GET", url, true)          ; true = asynchronous
+        ; GitHub refuses API requests with no User-Agent. Naming the script
+        ; rather than spoofing a browser is both honest and easier to allow
+        ; through a proxy.
+        _updHttp.SetRequestHeader("User-Agent", "HSBG-UpdateCheck")
+        if (stage = "api")
+            _updHttp.SetRequestHeader("Accept", "application/vnd.github+json")
+        _updHttp.Send()
+    } catch as e {
+        _FSLog("UPDATE could not start the " . stage . " request ("
+             . e.Message . ") -- skipping the version check for this run")
+        _UpdCleanup()
+        return
+    }
+
+    _updDeadline := A_TickCount + 15000
+    SetTimer(_UpdPollTick, 250)
+}
+
+; Non-blocking poll. WaitForResponse(0) returns at once whether or not the
+; response has landed, which is the entire reason this is a timer rather than a
+; straight-line call.
+_UpdPollTick() {
+    global _updHttp, _updDeadline, _updStage
+
+    if !_updHttp {
+        SetTimer(_UpdPollTick, 0)
+        return
+    }
+
+    if (A_TickCount > _updDeadline) {
+        _FSLog("UPDATE the " . _updStage . " request did not answer within"
+             . " 15s -- abandoned. Nothing is wrong with this script; the"
+             . " version check simply did not complete.")
+        _UpdAdvanceOrStop()
+        return
+    }
+
+    ready  := false
+    failed := false
+    try {
+        ready := _updHttp.WaitForResponse(0)
+    } catch {
+        ; The request failed outright -- no route, TLS refused, DNS miss. That
+        ; is an answer, and the answer is "not this source".
+        failed := true
+    }
+    if failed {
+        _UpdAdvanceOrStop()
+        return
+    }
+    if !ready
+        return
+
+    status := 0
+    body   := ""
+    try {
+        status := _updHttp.Status
+        body   := _updHttp.ResponseText
+    } catch {
+        _UpdAdvanceOrStop()
+        return
+    }
+
+    if (status != 200) {
+        _FSLog("UPDATE " . _updStage . " returned HTTP " . status
+             . (status = 403 ? " (rate limit -- this is per-IP and clears"
+                             . " within the hour)" : ""))
+        _UpdAdvanceOrStop()
+        return
+    }
+
+    stage := _updStage
+    SetTimer(_UpdPollTick, 0)
+    _UpdHandleBody(stage, body)
+}
+
+; The API failed, so try the repository file; the repository file failed, so
+; stop. One place decides that, so neither path can loop.
+_UpdAdvanceOrStop() {
+    global _updStage
+    stage := _updStage
+    SetTimer(_UpdPollTick, 0)
+    _UpdCleanup()
+    if (stage = "api") {
+        _FSLog("UPDATE falling back to version.json in the repository")
+        _UpdBegin("raw")
+        return
+    }
+    _FSLog("UPDATE no version information could be retrieved this run")
+}
+
+_UpdCleanup() {
+    global _updHttp
+    try _updHttp := ""
+}
+
+; ------------------------------------------------------------------------------
+; Reading the answer
+; ------------------------------------------------------------------------------
+;
+; Both sources are JSON, and both are read with a regex rather than a parser.
+; That is a deliberate limit, not a shortcut: exactly three string fields are
+; wanted, all of them flat, and importing a JSON library to reach them would add
+; several hundred lines to a single-file script for no gain in correctness.
+;
+; The release page URL is NOT taken from the response. GitHub's release JSON
+; contains several html_url fields -- the release, the author, each asset -- and
+; picking the wrong one sends the user to somebody's profile. It is built from
+; the two repository constants instead, where it cannot be wrong.
+_UpdHandleBody(stage, body) {
+    global HSBG_BUILD, _updNewVersion, _updDownloadUrl
+
+    _UpdCleanup()
+
+    tag := ""
+    if RegExMatch(body, '"tag_name"\s*:\s*"([^"]+)"', &m)
+        tag := m[1]
+    else if RegExMatch(body, '"version"\s*:\s*"([^"]+)"', &m)
+        tag := m[1]
+
+    if (tag = "") {
+        _FSLog("UPDATE " . stage . " answered, but carried no version field"
+             . " -- ignoring it")
+        return
+    }
+
+    cmp := _UpdCompare(tag, HSBG_BUILD)
+    if (cmp = "") {
+        _FSLog("UPDATE cannot compare " . tag . " against this build ("
+             . HSBG_BUILD . ") -- one of them is not a version number, so"
+             . " nothing is claimed either way")
+        return
+    }
+    if (cmp <= 0) {
+        _FSLog("UPDATE this build (" . HSBG_BUILD . ") is current; newest"
+             . " published is " . tag)
+        return
+    }
+
+    _updNewVersion := tag
+
+    ; The attached .ahk, if the release has one. A release published without an
+    ; asset is still worth announcing -- the user is simply sent to the page.
+    if RegExMatch(body, '"browser_download_url"\s*:\s*"([^"]*\.ahk)"', &m)
+        _updDownloadUrl := m[1]
+    else if RegExMatch(body, '"download"\s*:\s*"([^"]+)"', &m)
+        _updDownloadUrl := m[1]
+
+    notes := ""
+    if RegExMatch(body, '"notes"\s*:\s*"([^"]*)"', &m)
+        notes := m[1]
+
+    _FSLog("UPDATE " . tag . " is available (this build is " . HSBG_BUILD
+         . ")" . (notes != "" ? " -- " . notes : "")
+         . (_updDownloadUrl != "" ? " -- asset: " . _updDownloadUrl
+                                  : " -- no .ahk asset on the release"))
+
+    _UpdAnnounce(tag, notes)
+}
+
+; ------------------------------------------------------------------------------
+; Telling the user
+; ------------------------------------------------------------------------------
+;
+; Once, quietly, and then it waits to be asked. A version check that interrupts
+; a match has made the script worse at the thing it exists to do, and a modal
+; dialog over a Battlegrounds board is exactly that. So: one toast, a changed
+; tooltip that persists, and a tray item that is there whenever the user goes
+; looking. No dialog, no repeat, no second toast later in the session.
+_UpdAnnounce(tag, notes) {
+    global HSBG_BUILD
+
+    try A_IconTip := "Battle Grounds " . HSBG_BUILD . " — running · "
+                   . tag . " available"
+
+    try {
+        A_TrayMenu.Insert("1&", "Get " . tag . " …", (*) => UpdateFetchNow())
+    }
+
+    try BgHUD.Show(tag . " is available — tray icon → Get " . tag, 6000)
+}
+
+; Fetch the new file. User-initiated, from the tray menu, and deliberately the
+; only part of this subsystem that touches the disk.
+;
+; IT DOES NOT TOUCH THE RUNNING SCRIPT. The file lands beside it under the new
+; version's name, so both exist and the user chooses when to switch. Overwriting
+; A_ScriptFullPath while AutoHotkey has it open risks a half-written script that
+; will not start, on a machine whose owner has just been told it was safe.
+UpdateFetchNow() {
+    global _updNewVersion, _updDownloadUrl
+
+    if (_updNewVersion = "")
+        return
+
+    ; No asset on the release: the page is the honest answer.
+    if (_updDownloadUrl = "") {
+        _FSLog("UPDATE no downloadable .ahk on " . _updNewVersion
+             . " -- opening the releases page instead")
+        try Run(_UpdReleasesPage())
+        return
+    }
+
+    ; The script's own folder is not always writable -- the same problem the
+    ; settings file has, for the same reason. Resolved BEFORE the file is looked
+    ; for, so the "already downloaded?" test and the download itself cannot
+    ; disagree about where the file lives.
+    dir  := _DirIsWritable(A_ScriptDir) ? A_ScriptDir : A_Temp
+    dest := dir . "\HSBG Script Final " . _updNewVersion . ".ahk"
+
+    ; Already fetched on an earlier click. Show it rather than downloading it
+    ; twice, which is also what a user who clicked again is actually asking for.
+    if FileExist(dest) {
+        _FSLog("UPDATE " . _updNewVersion . " was already downloaded to "
+             . dest . " -- opening the folder")
+        try Run('explorer.exe /select,"' . dest . '"')
+        try BgHUD.Show("Already downloaded — " . _updNewVersion . ".ahk", 4000)
+        return
+    }
+
+    try BgHUD.Show("Downloading " . _updNewVersion . "…", 0)
+    ok := false
+    try {
+        Download(_updDownloadUrl, dest)
+        ok := FileExist(dest) ? true : false
+    }
+
+    if !ok {
+        _FSLog("UPDATE the download of " . _updNewVersion . " failed"
+             . " -- opening the releases page so it can be fetched by hand")
+        try BgHUD.Show("Download failed — opening the releases page", 3000)
+        try Run(_UpdReleasesPage())
+        return
+    }
+
+    _FSLog("UPDATE downloaded " . _updNewVersion . " to " . dest
+         . " -- the running script was NOT modified")
+    try BgHUD.Show("Saved beside this script — exit HSBG, then run "
+                 . _updNewVersion, 7000)
+    try Run('explorer.exe /select,"' . dest . '"')
+}
+
+; ==============================================================================
 ; SECTION 14: LAUNCH PIPELINE — F2 state machine
 ; ==============================================================================
 ; States:  IDLE → HAMMERING → LOGIN_WAIT → DONE
@@ -13656,6 +14080,7 @@ ExitCleanup(*) {
     try SetTimer(F1BNetGuardTick,             0)
     try SetTimer(BNetMinimizeSequenceTick,    0)
     try SetTimer(HK_ReachabilityWatchdog,     0)
+    try SetTimer(_UpdPollTick,                0)
 
     try {
         prev := A_DetectHiddenWindows
@@ -13819,6 +14244,14 @@ if CFG.hotkeyAudio {
 } else {
     _FSLog("AUDIO disabled (HotkeyAudio=0 in " . _ConfigPath() . ")")
 }
+
+; Update check: deferred, once, and non-blocking. Ten seconds puts it clear of
+; an F2 pressed the instant the tray icon appears, and SECTION 13 polls the
+; request from a timer so a dead network cannot stall a single hotkey.
+if CFG.updateCheck
+    SetTimer(UpdateCheckStart, -10000)
+else
+    _FSLog("UPDATE disabled (UpdateCheck=0 in " . _ConfigPath() . ")")
 
 ; Hotkey watchdog: releases a system modifier the OS is reporting as held while
 ; nothing is being typed. That state makes all four F-keys inert with no
