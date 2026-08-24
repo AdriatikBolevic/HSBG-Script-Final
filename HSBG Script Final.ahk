@@ -11874,7 +11874,7 @@ _UpdBegin(stage) {
          ? "https://api.github.com/repos/" . HSBG_REPO_OWNER . "/"
            . HSBG_REPO_NAME . "/releases/latest"
          : "https://raw.githubusercontent.com/" . HSBG_REPO_OWNER . "/"
-           . HSBG_REPO_NAME . "/HSBG-Final/version.json"
+           . HSBG_REPO_NAME . "/FINAL/version.json"
 
     try {
         _updHttp := ComObject("WinHttp.WinHttpRequest.5.1")

@@ -47,7 +47,7 @@ which is exactly what step 3 does.
 git add -A
 git commit -m "v4.0.0"
 git tag v4.0.0
-git push origin HSBG-Final --tags
+git push origin FINAL --tags
 ```
 
 **4. Publish the release.** On GitHub: *Releases* → *Draft a new release* →
