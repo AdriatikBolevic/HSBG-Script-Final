@@ -1,0 +1,19 @@
+# HSBG writes these at runtime. None of them belong in the repository.
+
+# The diagnostic log, which has never been tracked and should stay that way.
+# The script writes a fresh one beside itself on every machine that runs it, so
+# a committed copy would only be one stale session — and since every line in it
+# carries an absolute path, it would carry a Windows username with it.
+# Listed here so a stray `git add -A` from a folder you have been testing in
+# cannot sweep it in.
+HSBG.log
+HSBG.log.1
+
+# Downloaded by the update check, beside the script, named for its version.
+HSBG Script Final v*.ahk
+
+# The settings file is deliberately NOT ignored: the copy in this repository is
+# the documented default, and the script regenerates an identical one if it is
+# missing. If you keep personal settings here, ignore it locally instead
+# (git update-index --skip-worktree "HSBG Config.ini") rather than committing
+# your own paths.
